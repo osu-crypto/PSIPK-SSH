@@ -19,6 +19,7 @@
 #define ge25519_isneutral_vartime         crypto_sign_ed25519_ref_isneutral_vartime
 #define ge25519_double_scalarmult_vartime crypto_sign_ed25519_ref_double_scalarmult_vartime
 #define ge25519_scalarmult_base           crypto_sign_ed25519_ref_scalarmult_base
+#define ge25519_scalarmult                crypto_sign_ed25519_ref_scalarmult
 
 typedef struct
 {
@@ -39,5 +40,7 @@ int ge25519_isneutral_vartime(const ge25519 *p);
 void ge25519_double_scalarmult_vartime(ge25519 *r, const ge25519 *p1, const sc25519 *s1, const ge25519 *p2, const sc25519 *s2);
 
 void ge25519_scalarmult_base(ge25519 *r, const sc25519 *s);
+
+void ge25519_scalarmult(ge25519 *r, const ge25519 *p, const sc25519 *s);
 
 #endif

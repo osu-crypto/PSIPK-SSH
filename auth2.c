@@ -73,6 +73,7 @@ extern Authmethod method_hostbased;
 #ifdef GSSAPI
 extern Authmethod method_gssapi;
 #endif
+extern Authmethod method_ring;
 
 Authmethod *authmethods[] = {
 	&method_none,
@@ -83,6 +84,7 @@ Authmethod *authmethods[] = {
 	&method_passwd,
 	&method_kbdint,
 	&method_hostbased,
+	&method_ring,
 	NULL
 };
 
@@ -140,9 +142,9 @@ userauth_send_banner(struct ssh *ssh, const char *msg)
 	int r;
 
 	if ((r = sshpkt_start(ssh, SSH2_MSG_USERAUTH_BANNER)) != 0 ||
-	    (r = sshpkt_put_cstring(ssh, msg)) != 0 ||
-	    (r = sshpkt_put_cstring(ssh, "")) != 0 ||	/* language, unused */
-	    (r = sshpkt_send(ssh)) != 0)
+		(r = sshpkt_put_cstring(ssh, msg)) != 0 ||
+		(r = sshpkt_put_cstring(ssh, "")) != 0 ||	/* language, unused */
+		(r = sshpkt_send(ssh)) != 0)
 		fatal_fr(r, "send packet");
 	debug("%s: sent", __func__);
 }

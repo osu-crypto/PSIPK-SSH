@@ -446,7 +446,8 @@ fill_default_server_options(ServerOptions *options)
 
 	/* Turn privilege separation and sandboxing on by default */
 	if (use_privsep == -1)
-		use_privsep = PRIVSEP_ON;
+		//XXX Turning off temporarily
+		use_privsep = PRIVSEP_OFF;
 
 #define CLEAR_ON_NONE(v) \
 	do { \

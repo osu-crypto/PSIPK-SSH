@@ -370,10 +370,12 @@ static int input_userauth_banner(int, u_int32_t, struct ssh *);
 static int input_userauth_error(int, u_int32_t, struct ssh *);
 static int input_userauth_info_req(int, u_int32_t, struct ssh *);
 static int input_userauth_pk_ok(int, u_int32_t, struct ssh *);
+static int input_userauth_ring_ok(int, u_int32_t, struct ssh *);
 static int input_userauth_passwd_changereq(int, u_int32_t, struct ssh *);
 
 static int userauth_none(struct ssh *);
 static int userauth_pubkey(struct ssh *);
+static int userauth_ring(struct ssh *);
 static int userauth_passwd(struct ssh *);
 static int userauth_kbdint(struct ssh *);
 static int userauth_hostbased(struct ssh *);
@@ -415,6 +417,12 @@ Authmethod authmethods[] = {
 	{"publickey",
 		userauth_pubkey,
 		NULL,
+		&options.pubkey_authentication,
+		NULL},
+	{"ring",
+		userauth_ring,
+		NULL,
+		// XXX add option
 		&options.pubkey_authentication,
 		NULL},
 	{"keyboard-interactive",
@@ -686,6 +694,38 @@ format_identity(Identity *id)
 	    id->agent_fd != -1 ? " agent" : "");
 	free(fp);
 	return ret;
+}
+
+/* ARGSUSED */
+static int
+input_userauth_ring_ok(int type, u_int32_t seq, struct ssh *ssh)
+{
+	Authctxt *authctxt = (Authctxt *) ssh->authctxt;
+	Identity *id = NULL;
+    u_char* gr;
+    u_char* keys[256];
+    size_t keylen;
+    size_t keyscount;
+	int r;
+
+	if (authctxt == NULL)
+		fatal("input_userauth_pk_ok: no authentication context");
+
+    if ((r = sshpkt_get_string(ssh, &gr, &keylen)) != 0 ||
+        (r = sshpkt_get_u64(ssh, &keyscount)) != 0)
+        fatal_fr(r, "g^r and i");
+
+    for (size_t i = 0; i < keyscount; i++)
+    {
+        if ((r = sshpkt_get_string(ssh, &keys[i], &keylen)) != 0)
+            fatal_fr(r, "A_i^r");
+    }
+
+    if ((r = sshpkt_get_end(ssh)) != 0)
+        fatal_fr(r, "packet end");
+
+    // Now run PSI with the keys we just received
+    return 0;
 }
 
 /* ARGSUSED */
@@ -1865,6 +1905,26 @@ userauth_pubkey(struct ssh *ssh)
 			return (sent);
 	}
 	return (0);
+}
+
+static int
+userauth_ring(struct ssh *ssh)
+{
+	Authctxt *authctxt = (Authctxt *)ssh->authctxt;
+    int r;
+
+    // Request ring authentication
+	if ((r = sshpkt_start(ssh, SSH2_MSG_USERAUTH_REQUEST)) != 0 ||
+	    (r = sshpkt_put_cstring(ssh, authctxt->server_user)) != 0 ||
+	    (r = sshpkt_put_cstring(ssh, authctxt->service)) != 0 ||
+	    (r = sshpkt_put_cstring(ssh, authctxt->method->name)) != 0 ||
+	    (r = sshpkt_send(ssh)) != 0)
+		fatal_fr(r, "send packet");
+
+	ssh_dispatch_set(ssh, SSH2_MSG_USERAUTH_RING_OK, &input_userauth_ring_ok);
+
+    // sent
+	return (1);
 }
 
 /*
