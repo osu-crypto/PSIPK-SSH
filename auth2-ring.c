@@ -196,7 +196,7 @@ run_protocol(struct ssh *ssh, struct sshkey **keys, size_t keyslen)
 			fatal_fr(err, "A_i^r");
 	}
 
-	if ((err = sshpkt_send(ssh) != 0) ||
+	if ((err = sshpkt_send(ssh)) != 0 ||
 			(err = ssh_packet_write_wait(ssh)) != 0)
 		fatal_fr(err, "send packet");
 
