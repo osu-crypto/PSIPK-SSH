@@ -414,15 +414,15 @@ Authmethod authmethods[] = {
 		NULL,
 		&options.hostbased_authentication,
 		NULL},
-	{"publickey",
-		userauth_pubkey,
-		NULL,
-		&options.pubkey_authentication,
-		NULL},
 	{"ring",
 		userauth_ring,
 		NULL,
 		// XXX add option
+		&options.ring_authentication,
+		NULL},
+	{"publickey",
+		userauth_pubkey,
+		NULL,
 		&options.pubkey_authentication,
 		NULL},
 	{"keyboard-interactive",
@@ -702,22 +702,30 @@ input_userauth_ring_ok(int type, u_int32_t seq, struct ssh *ssh)
 {
 	Authctxt *authctxt = (Authctxt *) ssh->authctxt;
 	Identity *id = NULL;
-    u_char* gr;
-    u_char* keys[256];
-    size_t keylen;
-    size_t keyscount;
+    u_char *gr;
+    u_char **keys;
+    struct sshkey *privkeys[256];
+
+    u_char **intersection = NULL;
+
+    size_t privkeys_len = 0;
+    size_t keys_len;
+    int ret = 0;
 	int r;
 
 	if (authctxt == NULL)
 		fatal("input_userauth_pk_ok: no authentication context");
 
-    if ((r = sshpkt_get_string(ssh, &gr, &keylen)) != 0 ||
-        (r = sshpkt_get_u64(ssh, &keyscount)) != 0)
+    if ((r = sshpkt_get_string(ssh, &gr, NULL)) != 0 ||
+        (r = sshpkt_get_u64(ssh, &keys_len)) != 0)
         fatal_fr(r, "g^r and i");
 
-    for (size_t i = 0; i < keyscount; i++)
+
+    keys = (u_char**) malloc(sizeof(u_char*) * keys_len);
+
+    for (size_t i = 0; i < keys_len; i++)
     {
-        if ((r = sshpkt_get_string(ssh, &keys[i], &keylen)) != 0)
+        if ((r = sshpkt_get_string(ssh, &keys[i], NULL)) != 0)
             fatal_fr(r, "A_i^r");
     }
 
@@ -725,7 +733,39 @@ input_userauth_ring_ok(int type, u_int32_t seq, struct ssh *ssh)
         fatal_fr(r, "packet end");
 
     // Now run PSI with the keys we just received
-    return 0;
+	// 1. Convert received keys to ge25519
+	// 2. loop through authctxt->keys;
+	// 3. (g^r)^k_i =? A_i^r
+	// 4. If so, match found: (k_i i)
+	// 5. Send signature of sid with (k_i, A_i^r = (g^r)^k)
+    TAILQ_FOREACH(id, &authctxt->keys, next) {
+        if (id->key != NULL && id->key->type == KEY_ED25519) {
+		    if ((privkeys[privkeys_len] = load_identity_file(id)) != NULL) {
+                privkeys_len++;
+            }
+        }
+    }
+
+    if (privkeys_len == 0) {
+        ret = SSH_ERR_KEY_NOT_FOUND;
+        goto out;
+    }
+
+    ret = sshkey_psi(intersection, privkeys, privkeys_len, keys, keys_len, gr);
+
+out:
+    for (size_t i = 0; i < keys_len; i++)
+    {
+		free(keys[i]);
+	}
+
+    free(keys);
+
+    for (size_t i = 0; i < privkeys_len; i++)
+    {
+		free(privkeys[i]);
+	}
+	return ret;
 }
 
 /* ARGSUSED */

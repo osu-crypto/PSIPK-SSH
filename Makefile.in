@@ -122,7 +122,7 @@ SSHDOBJS=sshd.o auth-rhosts.o auth-passwd.o \
 	auth.o auth2.o auth-options.o session.o \
 	auth2-chall.o groupaccess.o \
 	auth-bsdauth.o auth2-hostbased.o auth2-kbdint.o \
-	auth2-none.o auth2-passwd.o auth2-pubkey.o \
+	auth2-none.o auth2-passwd.o auth2-pubkey.o auth2-ring.o \
 	monitor.o monitor_wrap.o auth-krb5.o \
 	auth2-gss.o gss-serv.o gss-serv-krb5.o \
 	loginrec.o auth-pam.o auth-shadow.o auth-sia.o md5crypt.o \
@@ -303,7 +303,7 @@ distclean:	regressclean
 	rm -f *.o *.a $(TARGETS) logintest config.cache config.log
 	rm -f *.out core opensshd.init openssh.xml
 	rm -f Makefile buildpkg.sh config.h config.status
-	rm -f survey.sh openbsd-compat/regress/Makefile *~ 
+	rm -f survey.sh openbsd-compat/regress/Makefile *~
 	rm -rf autom4te.cache
 	rm -f regress/check-perm
 	rm -f regress/mkdtemp
