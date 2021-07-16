@@ -126,6 +126,20 @@ int fe25519_iszero(const fe25519 *x)
   return r;
 }
 
+int fe25519_iseq(const fe25519 *x, const fe25519 *y)
+{
+  int i;
+  int r;
+  fe25519 t1 = *x;
+  fe25519 t2 = *y;
+  fe25519_freeze(&t1);
+  fe25519_freeze(&t2);
+  r = equal(t1.v[0],t2.v[0]);
+  for(i=1;i<32;i++)
+    r &= equal(t1.v[i],t2.v[i]);
+  return r;
+}
+
 int fe25519_iseq_vartime(const fe25519 *x, const fe25519 *y)
 {
   int i;
