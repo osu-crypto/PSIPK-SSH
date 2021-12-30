@@ -206,9 +206,9 @@ static void setneutral(ge25519 *r)
 int ge25519_unpackneg_vartime(ge25519_p3 *r, const unsigned char p[32])
 {
   unsigned char par;
-  fe25519 t, chk, num, den, den2, den4, den6;
+  fe25519 t, chk, num, den, den2, den4, den6, tmp;
   fe25519_setone(&r->z);
-  par = p[31] >> 7;
+  par = (p[31] >> 7) & 1;
   fe25519_unpack(&r->y, p); 
   fe25519_square(&num, &r->y); /* x = y^2 */
   fe25519_mul(&den, &num, &ge25519_ecd); /* den = dy^2 */
@@ -233,8 +233,8 @@ int ge25519_unpackneg_vartime(ge25519_p3 *r, const unsigned char p[32])
   /* 3. Check whether sqrt computation gave correct result, multiply by sqrt(-1) if not: */
   fe25519_square(&chk, &r->x);
   fe25519_mul(&chk, &chk, &den);
-  if (!fe25519_iseq_vartime(&chk, &num))
-    fe25519_mul(&r->x, &r->x, &ge25519_sqrtm1);
+  fe25519_mul(&tmp, &r->x, &ge25519_sqrtm1);
+  fe25519_cmov(&r->x, &tmp, 1 ^ fe25519_iseq(&chk, &num))
 
   /* 4. Now we have one of the two square roots, except if input was not a square */
   fe25519_square(&chk, &r->x);
@@ -243,8 +243,8 @@ int ge25519_unpackneg_vartime(ge25519_p3 *r, const unsigned char p[32])
     return -1;
 
   /* 5. Choose the desired square root according to parity: */
-  if(fe25519_getparity(&r->x) != (1-par))
-    fe25519_neg(&r->x, &r->x);
+  fe25519_neg(&tmp, &r->x);
+  fe25519_cmov(&r->x, &tmp, 1 ^ fe25519_getparity(&r->x) ^ par);
 
   fe25519_mul(&r->t, &r->x, &r->y);
   return 0;
