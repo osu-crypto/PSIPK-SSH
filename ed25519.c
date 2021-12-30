@@ -48,6 +48,34 @@ int crypto_sign_ed25519_keypair(
   return 0;
 }
 
+// Find (g^r)^k_i (scalarmult(dest, gr, privkey). Compare with A_i^r (serverkeys)
+// Ret 1 if no intersection
+// Ret 0 if intersection found
+int crypto_psi_ed25519(u_char** intersection,
+    u_char **privkeys, const size_t privkeys_len,
+    u_char **serverkeys, const size_t serverkeys_len,
+    const u_char *gr
+    )
+{
+    ge25519 *grk;
+    sc25519 sk;
+    ge25519 gegr;
+
+    ge25519_unpackneg_vartime(&gegr, gr);
+
+    // XXX n^2 algorithm is bad :)
+    for (size_t i = 0; i < privkeys_len; i++) {
+        grk = (ge25519 *) malloc(sizeof(ge25519));
+        sc25519_from32bytes(&sk, privkeys[i]);
+        ge25519_scalarmult(grk, &gegr, &sk); //(r, p, s)
+
+        for (size_t j = 0; j < serverkeys_len; j++) {
+            // check if grk == serverkeys[i]
+            // if so, append sk in intersection. Sign with (sk, serverkeys[i])
+        }
+    }
+}
+
 int crypto_sign_ed25519(
     unsigned char *sm,unsigned long long *smlen,
     const unsigned char *m,unsigned long long mlen,

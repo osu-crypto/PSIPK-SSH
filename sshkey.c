@@ -2730,6 +2730,24 @@ sshkey_check_sigtype(const u_char *sig, size_t siglen,
 }
 
 int
+sshkey_psi(u_char** intersection,
+    struct sshkey **privkeys, const size_t privkeys_len,
+    u_char **serverkeys, const size_t serverkeys_len,
+    const u_char *gr)
+{
+    int ret = 0;
+    u_char **privkeys_char = (u_char**) malloc(sizeof(u_char*) * privkeys_len);
+    for (size_t i = 0; i < privkeys_len; i++) {
+        privkeys_char[i] = privkeys[i]->ed25519_sk;
+    }
+    //ret = crypto_psi_ed25519(intersection, privkeys_char, privkeys_len, serverkeys, serverkeys_len, gr);
+
+out:
+    free(privkeys_char);
+    return ret;
+}
+
+int
 sshkey_sign(struct sshkey *key,
     u_char **sigp, size_t *lenp,
     const u_char *data, size_t datalen,

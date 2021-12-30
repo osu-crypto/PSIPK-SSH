@@ -240,6 +240,7 @@ int	 sshkey_puts_opts(const struct sshkey *, struct sshbuf *,
 int	 sshkey_plain_to_blob(const struct sshkey *, u_char **, size_t *);
 int	 sshkey_putb_plain(const struct sshkey *, struct sshbuf *);
 
+int  sshkey_psi(u_char **, struct sshkey **, const size_t , u_char **, const size_t, const u_char *);
 int	 sshkey_sign(struct sshkey *, u_char **, size_t *,
     const u_char *, size_t, const char *, const char *, const char *, u_int);
 int	 sshkey_verify(const struct sshkey *, const u_char *, size_t,

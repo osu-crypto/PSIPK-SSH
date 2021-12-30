@@ -154,7 +154,7 @@ typedef enum {
 	oBatchMode, oCheckHostIP, oStrictHostKeyChecking, oCompression,
 	oTCPKeepAlive, oNumberOfPasswordPrompts,
 	oLogFacility, oLogLevel, oLogVerbose, oCiphers, oMacs,
-	oPubkeyAuthentication,
+	oPubkeyAuthentication, oRingAuthentication,
 	oKbdInteractiveAuthentication, oKbdInteractiveDevices, oHostKeyAlias,
 	oDynamicForward, oPreferredAuthentications, oHostbasedAuthentication,
 	oHostKeyAlgorithms, oBindAddress, oBindInterface, oPKCS11Provider,
@@ -232,6 +232,7 @@ static struct {
 	{ "challengeresponseauthentication", oKbdInteractiveAuthentication }, /* alias */
 	{ "skeyauthentication", oKbdInteractiveAuthentication }, /* alias */
 	{ "tisauthentication", oKbdInteractiveAuthentication },  /* alias */
+	{ "ringauthentication", oRingAuthentication },
 	{ "pubkeyauthentication", oPubkeyAuthentication },
 	{ "dsaauthentication", oPubkeyAuthentication },		    /* alias */
 	{ "hostbasedauthentication", oHostbasedAuthentication },
@@ -1114,6 +1115,10 @@ parse_time:
 		multistate_ptr = multistate_pubkey_auth;
 		intptr = &options->pubkey_authentication;
 		goto parse_multistate;
+
+	case oRingAuthentication:
+		intptr = &options->ring_authentication;
+		goto parse_flag;
 
 	case oHostbasedAuthentication:
 		intptr = &options->hostbased_authentication;
@@ -2342,6 +2347,7 @@ initialize_options(Options * options)
 	options->fwd_opts.streamlocal_bind_mask = (mode_t)-1;
 	options->fwd_opts.streamlocal_bind_unlink = -1;
 	options->pubkey_authentication = -1;
+	options->ring_authentication = -1;
 	options->gss_authentication = -1;
 	options->gss_deleg_creds = -1;
 	options->password_authentication = -1;
@@ -3305,6 +3311,7 @@ dump_client_config(Options *o, const char *host)
 	dump_cfg_fmtint(oPermitLocalCommand, o->permit_local_command);
 	dump_cfg_fmtint(oProxyUseFdpass, o->proxy_use_fdpass);
 	dump_cfg_fmtint(oPubkeyAuthentication, o->pubkey_authentication);
+	dump_cfg_fmtint(oRingAuthentication, o->ring_authentication);
 	dump_cfg_fmtint(oRequestTTY, o->request_tty);
 	dump_cfg_fmtint(oSessionType, o->session_type);
 	dump_cfg_fmtint(oStdinNull, o->stdin_null);

@@ -28,6 +28,16 @@ static const fe25519 ge25519_ec2d = {{0x59, 0xF1, 0xB2, 0x26, 0x94, 0x9B, 0xD6, 
 static const fe25519 ge25519_sqrtm1 = {{0xB0, 0xA0, 0x0E, 0x4A, 0x27, 0x1B, 0xEE, 0xC4, 0x78, 0xE4, 0x2F, 0xAD, 0x06, 0x18, 0x43, 0x2F, 
                          0xA7, 0xD7, 0xFB, 0x3D, 0x99, 0x00, 0x4D, 0x2B, 0x0B, 0xDF, 0xC1, 0x4F, 0x80, 0x24, 0x83, 0x2B}};
 
+/* Packed coordinates of the neutral element */
+static const unsigned char ge25519_neutral_x[32] = {0};
+static const unsigned char ge25519_neutral_y[32] = {1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+static const unsigned char ge25519_neutral_z[32] = {1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+static const unsigned char ge25519_neutral_t[32] = {0};
+
+#define WINDOWSIZE 4
+#define WINDOWMASK ((1<<WINDOWSIZE)-1)
+
+
 #define ge25519_p3 ge25519
 
 typedef struct
@@ -196,9 +206,9 @@ static void setneutral(ge25519 *r)
 int ge25519_unpackneg_vartime(ge25519_p3 *r, const unsigned char p[32])
 {
   unsigned char par;
-  fe25519 t, chk, num, den, den2, den4, den6;
+  fe25519 t, chk, num, den, den2, den4, den6, tmp;
   fe25519_setone(&r->z);
-  par = p[31] >> 7;
+  par = (p[31] >> 7) & 1;
   fe25519_unpack(&r->y, p); 
   fe25519_square(&num, &r->y); /* x = y^2 */
   fe25519_mul(&den, &num, &ge25519_ecd); /* den = dy^2 */
@@ -223,8 +233,8 @@ int ge25519_unpackneg_vartime(ge25519_p3 *r, const unsigned char p[32])
   /* 3. Check whether sqrt computation gave correct result, multiply by sqrt(-1) if not: */
   fe25519_square(&chk, &r->x);
   fe25519_mul(&chk, &chk, &den);
-  if (!fe25519_iseq_vartime(&chk, &num))
-    fe25519_mul(&r->x, &r->x, &ge25519_sqrtm1);
+  fe25519_mul(&tmp, &r->x, &ge25519_sqrtm1);
+  fe25519_cmov(&r->x, &tmp, 1 ^ fe25519_iseq(&chk, &num))
 
   /* 4. Now we have one of the two square roots, except if input was not a square */
   fe25519_square(&chk, &r->x);
@@ -233,8 +243,8 @@ int ge25519_unpackneg_vartime(ge25519_p3 *r, const unsigned char p[32])
     return -1;
 
   /* 5. Choose the desired square root according to parity: */
-  if(fe25519_getparity(&r->x) != (1-par))
-    fe25519_neg(&r->x, &r->x);
+  fe25519_neg(&tmp, &r->x);
+  fe25519_cmov(&r->x, &tmp, 1 ^ fe25519_getparity(&r->x) ^ par);
 
   fe25519_mul(&r->t, &r->x, &r->y);
   return 0;
@@ -318,4 +328,69 @@ void ge25519_scalarmult_base(ge25519_p3 *r, const sc25519 *s)
     choose_t(&t, (unsigned long long) i, b[i]);
     ge25519_mixadd2(r, &t);
   }
+}
+
+/* Constant-time version of: if(b) r = p */
+static void cmov_p3(ge25519_p3 *r, const ge25519_p3 *p, unsigned char b)
+{
+  fe25519_cmov(&r->x, &p->x, b);
+  fe25519_cmov(&r->y, &p->y, b);
+  fe25519_cmov(&r->z, &p->z, b);
+  fe25519_cmov(&r->t, &p->t, b);
+}
+
+void ge25519_scalarmult(ge25519_p3 *r, const ge25519_p3 *p, const sc25519 *s)
+{
+  int i,j,k;
+  ge25519_p3 g;
+  fe25519_unpack(&g.x, ge25519_neutral_x);
+  fe25519_unpack(&g.y, ge25519_neutral_y);
+  fe25519_unpack(&g.z, ge25519_neutral_z);
+  fe25519_unpack(&g.t, ge25519_neutral_t);
+
+  ge25519_p3 pre[(1 << WINDOWSIZE)];
+  ge25519_p3 t;
+  ge25519_p1p1 tp1p1;
+  unsigned char w;
+  unsigned char sb[32];
+  sc25519_to32bytes(sb, s);
+
+  // Precomputation
+  pre[0] = g;
+  pre[1] = *p;
+  for(i=2;i<(1<<WINDOWSIZE);i+=2)
+  {
+    dbl_p1p1(&tp1p1, (ge25519_p2 *)(pre+i/2));
+    p1p1_to_p3(pre+i, &tp1p1);
+    add_p1p1(&tp1p1, pre+i, pre+1);
+    p1p1_to_p3(pre+i+1, &tp1p1);
+  }
+
+  // Fixed-window scalar multiplication
+  for(i=32;i>0;i--)
+  {
+    for(j=8-WINDOWSIZE;j>=0;j-=WINDOWSIZE)
+    {
+      for(k=0;k<WINDOWSIZE-1;k++)
+      {
+        dbl_p1p1(&tp1p1, (ge25519_p2 *)&g);
+        p1p1_to_p2((ge25519_p2 *)&g, &tp1p1);
+      }
+      dbl_p1p1(&tp1p1, (ge25519_p2 *)&g);
+      p1p1_to_p3(&g, &tp1p1);
+      // Cache-timing resistant loading of precomputed value:
+      w = (sb[i-1]>>j) & WINDOWMASK;
+      t = pre[0];
+      for(k=1;k<(1<<WINDOWSIZE);k++)
+        cmov_p3(&t, &pre[k], k==w);
+
+      add_p1p1(&tp1p1, &g, &t);
+      if(j != 0) p1p1_to_p2((ge25519_p2 *)&g, &tp1p1);
+      else p1p1_to_p3(&g, &tp1p1); /* convert to p3 representation at the end */
+    }
+  }
+  r->x = g.x;
+  r->y = g.y;
+  r->z = g.z;
+  r->t = g.t;
 }
