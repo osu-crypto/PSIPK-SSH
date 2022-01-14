@@ -716,6 +716,72 @@ buf_equal(const struct sshbuf *a, const struct sshbuf *b)
 	return 0;
 }
 
+// Needs to support ed25519, RSA, ecdsa (all of its keytypes)
+// Packet:
+// SSH2_KEM_DECRYPT
+// (key itself)
+// challenge (g^r, c mod N)
+// Return g^{rk} for each k in keys or c^d mod N
+static void
+process_multi_kem_dec_request(SocketEntry *e)
+{
+	const u_char *challenge;
+	u_char *kem = NULL;
+	size_t challengelen, klen = 0;
+	u_int flags;
+	int r, ok = -1;
+	char *fp = NULL;
+	struct sshbuf *msg;
+	struct sshkey *key = NULL;
+	struct identity *id;
+	struct notifier_ctx *notifier = NULL;
+
+	if ((msg = sshbuf_new()) == NULL)
+		fatal_f("sshbuf_new failed");
+
+	if ((r = sshkey_froms(e->request, &key) != 0) ||
+        (r = sshbuf_get_string_direct(e->request, &challenge, &challengelen)) != 0 ||
+	    (r = sshbuf_get_u32(e->request, &flags)) != 0) {
+		error_fr(r, "parse");
+		goto send;
+	}
+
+	if ((id = lookup_identity(key)) == NULL) {
+		verbose_f("%s key not found", sshkey_type(key));
+		goto send;
+	}
+
+    // XXX lol
+    if (id->confirm) {
+        verbose_f("user refused key");
+        goto send;
+    }
+
+    // NOT SIGN()
+    if ((r = sshkey_kem_dec(id->key, &kem, &klen, challenge, challengelen)) != 0) {
+        error_fr(r, "sshkey_kem_dec");
+    } else {
+        ok = 0;
+    }
+	/* Success */
+ send:
+	notify_complete(notifier, "User presence confirmed");
+	sshkey_free(key);
+	free(fp);
+	if (ok == 0) {
+		if ((r = sshbuf_put_u8(msg, SSH2_AGENT_SIGN_RESPONSE)) != 0 ||
+		    (r = sshbuf_put_string(msg, kem, klen)) != 0)
+			fatal_fr(r, "compose");
+	} else if ((r = sshbuf_put_u8(msg, SSH_AGENT_FAILURE)) != 0)
+		fatal_fr(r, "compose failure");
+
+	if ((r = sshbuf_put_stringb(e->output, msg)) != 0)
+		fatal_fr(r, "enqueue");
+
+	sshbuf_free(msg);
+    free(kem);
+}
+
 /* ssh2 only */
 static void
 process_sign_request2(SocketEntry *e)
@@ -1634,6 +1700,9 @@ process_message(u_int socknum)
 	case SSH2_AGENTC_SIGN_REQUEST:
 		process_sign_request2(e);
 		break;
+    case SSH2_AGENTC_MULTI_KEM_DEC_REQUEST:
+        process_multi_kem_dec_request(e);
+        break;
 	case SSH2_AGENTC_REQUEST_IDENTITIES:
 		process_request_identities(e);
 		break;

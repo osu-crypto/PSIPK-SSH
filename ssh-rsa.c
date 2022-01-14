@@ -159,6 +159,141 @@ ssh_rsa_complete_crt_parameters(struct sshkey *key, const BIGNUM *iqmp)
 	return r;
 }
 
+
+// KEM.enc(pk) -> return (sampled r, encrypted r)
+int
+ssh_rsa_kem_enc(const struct sshkey *key, u_char **c, size_t *clen,
+    u_char **r, size_t *rlen)
+{
+    const int statistical_sec_param = 64;
+    int ret = SSH_ERR_INTERNAL_ERROR;
+	const BIGNUM *rsa_n;
+	BIGNUM *rsa_e = NULL;
+	BN_CTX *ctx = NULL;
+	BIGNUM *numr = NULL, *x = NULL, *f = NULL, *cc = NULL;
+
+	int rsa_size = RSA_size(key->rsa);
+	int m = rsa_size * 8 + statistical_sec_param;
+    u_char *temp_c = NULL, *temp_r = NULL;
+
+	if ((numr = BN_new()) == NULL ||
+        (cc = BN_new()) == NULL ||
+        (x = BN_new()) == NULL ||
+        (f = BN_new()) == NULL)
+    {
+        ret = SSH_ERR_ALLOC_FAIL;
+        goto out;
+    }
+
+	if (key == NULL || key->rsa == NULL ||
+	    sshkey_type_plain(key->type) != KEY_RSA)
+    {
+        ret = SSH_ERR_INVALID_ARGUMENT;
+        goto out;
+    }
+
+	if ((ctx = BN_CTX_new()) == NULL)
+    {
+        ret = SSH_ERR_ALLOC_FAIL;
+        goto out;
+    }
+
+	if ((temp_c = malloc(m/8)) == NULL ||
+        (temp_r = malloc(rsa_size)) == NULL)
+    {
+		ret = SSH_ERR_ALLOC_FAIL;
+		goto out;
+	}
+
+    BN_set_flags(rsa_e, BN_FLG_CONSTTIME);
+    RSA_get0_key(key->rsa, &rsa_n, (const BIGNUM **)&rsa_e, NULL);
+    BN_rand_range(numr, rsa_n);
+    BN_mod_exp(cc, numr, rsa_e, rsa_n, ctx);
+
+    // padding k*N + c
+
+    // Get x from 0 to 2^m
+    // Find f = x mod N
+    // Result: x - f + c
+    BN_rand(x, m, BN_RAND_TOP_ANY, BN_RAND_BOTTOM_ANY);
+    BN_mod(f, x, rsa_n, ctx);
+    BN_sub(x, x, f);
+    BN_add(x, x, cc);
+
+    // serialize (lance is worried)
+    BN_bn2binpad(x, temp_c, m/8);
+    BN_bn2binpad(numr, temp_r, rsa_size);
+
+    *c = temp_c;
+    temp_c = NULL;
+
+    *clen = m/8;
+
+    *r = temp_r;
+    temp_r = NULL;
+
+    *rlen = rsa_size;
+
+    ret = 0;
+
+out:
+    BN_CTX_free(ctx);
+    BN_clear_free(numr);
+    BN_clear_free(x);
+    BN_clear_free(f);
+    BN_clear_free(cc);
+    free(temp_c);
+    free(temp_r);
+    return ret;
+}
+
+int
+ssh_rsa_kem_dec(const struct sshkey *key, u_char **kem, size_t *klen,
+    const u_char *chal, size_t challen)
+{
+	const BIGNUM *rsa_n;
+	size_t maxklen = 0;
+    u_char *temp_kem;
+    int ret = SSH_ERR_INTERNAL_ERROR;
+
+	if (klen != NULL)
+		*klen = 0;
+	if (kem != NULL)
+		*kem = NULL;
+
+	if (key == NULL || key->rsa == NULL ||
+	    sshkey_type_plain(key->type) != KEY_RSA)
+		return SSH_ERR_INVALID_ARGUMENT;
+
+	RSA_get0_key(key->rsa, &rsa_n, NULL, NULL);
+	if (BN_num_bits(rsa_n) < SSH_RSA_MINIMUM_MODULUS_SIZE)
+		return SSH_ERR_KEY_LENGTH;
+
+	maxklen = RSA_size(key->rsa);
+	if (maxklen <= 0 || maxklen > SSHBUF_MAX_BIGNUM)
+		return SSH_ERR_INVALID_ARGUMENT;
+
+	if ((temp_kem = malloc(maxklen)) == NULL) {
+		ret = SSH_ERR_ALLOC_FAIL;
+		goto out;
+	}
+
+    RSA_private_decrypt(challen, chal, temp_kem, key->rsa, RSA_NO_PADDING);
+	ret = 0;
+	if (kem != NULL) {
+        *kem = temp_kem;
+        temp_kem = NULL;
+	}
+
+	if (klen != NULL)
+		*klen = maxklen;
+
+ out:
+	freezero(temp_kem, maxklen);
+	return ret;
+}
+
+
 /* RSASSA-PKCS1-v1_5 (PKCS #1 v2.0 signature) with SHA1 */
 int
 ssh_rsa_sign(const struct sshkey *key, u_char **sigp, size_t *lenp,

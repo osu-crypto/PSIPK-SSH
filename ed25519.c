@@ -40,7 +40,7 @@ int crypto_sign_ed25519_keypair(
   extsk[31] |= 64;
 
   sc25519_from32bytes(&scsk,extsk);
-  
+
   ge25519_scalarmult_base(&gepk, &scsk);
   ge25519_pack(pk, &gepk);
   for(i=0;i<32;i++)
@@ -76,6 +76,31 @@ int crypto_psi_ed25519(u_char** intersection,
     }
 }
 
+
+int crypto_kem_dec_ed25519(
+    unsigned char *out, const unsigned char *gr,
+    const unsigned char *sk
+    )
+{
+    sc25519 scsk;
+    ge25519 get1, kemdec;
+    unsigned char extsk[64];
+
+    crypto_hash_sha512(extsk, sk, 32);
+    extsk[0] &= 248;
+    extsk[31] &= 127;
+    extsk[31] |= 64;
+
+    // scsk is the actual sk
+    sc25519_from32bytes(&scsk, extsk);
+    if (ge25519_unpackneg_vartime(&get1, gr)) return -1;
+
+    ge25519_scalarmult(&kemdec, &get1, &scsk);
+
+    ge25519_pack(out, &kemdec);
+    return 0;
+}
+
 int crypto_sign_ed25519(
     unsigned char *sm,unsigned long long *smlen,
     const unsigned char *m,unsigned long long mlen,
@@ -108,7 +133,7 @@ int crypto_sign_ed25519(
   sc25519_from64bytes(&sck, hmg);
   ge25519_scalarmult_base(&ger, &sck);
   ge25519_pack(r, &ger);
-  
+
   /* Computation of s */
   for(i=0;i<32;i++)
     sm[i] = r[i];
@@ -118,12 +143,12 @@ int crypto_sign_ed25519(
   sc25519_from64bytes(&scs, hram);
   sc25519_from32bytes(&scsk, extsk);
   sc25519_mul(&scs, &scs, &scsk);
-  
+
   sc25519_add(&scs, &scs, &sck);
 
   sc25519_to32bytes(s,&scs); /* cat s */
   for(i=0;i<32;i++)
-    sm[32 + i] = s[i]; 
+    sm[32 + i] = s[i];
 
   return 0;
 }

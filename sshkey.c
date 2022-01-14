@@ -2807,6 +2807,47 @@ sshkey_sign(struct sshkey *key,
 	return r;
 }
 
+int	 sshkey_kem_dec(struct sshkey * key, u_char ** kem, size_t * klen,
+    const u_char * gr, size_t grlen)
+{
+	int was_shielded = sshkey_is_shielded(key);
+	int r2, r = SSH_ERR_INTERNAL_ERROR;
+
+	if (kem != NULL)
+		*kem = NULL;
+	if (klen != NULL)
+		*klen = 0;
+	if (grlen > SSH_KEY_MAX_SIGN_DATA_SIZE)
+		return SSH_ERR_INVALID_ARGUMENT;
+	if ((r = sshkey_unshield_private(key)) != 0)
+		return r;
+	switch (key->type) {
+#ifdef WITH_OPENSSL
+# ifdef OPENSSL_HAS_ECC
+	case KEY_ECDSA_CERT:
+	case KEY_ECDSA:
+		r = ssh_ecdsa_kem_dec(key, kem, klen, gr, grlen);
+		break;
+# endif /* OPENSSL_HAS_ECC */
+	case KEY_RSA_CERT:
+	case KEY_RSA:
+		r = ssh_rsa_kem_dec(key, kem, klen, gr, grlen);
+		break;
+#endif /* WITH_OPENSSL */
+	case KEY_ED25519:
+	case KEY_ED25519_CERT:
+		r = ssh_ed25519_kem_dec(key, kem, klen, gr, grlen);
+		break;
+	default:
+		r = SSH_ERR_KEY_TYPE_UNKNOWN;
+		break;
+	}
+	if (was_shielded && (r2 = sshkey_shield_private(key)) != 0)
+		return r2;
+	return r;
+
+}
+
 /*
  * ssh_key_verify returns 0 for a correct signature  and < 0 on error.
  * If "alg" specified, then the signature must use that algorithm.
@@ -4023,9 +4064,9 @@ sshkey_private_to_blob2(struct sshkey *prv, struct sshbuf *blob,
 	explicit_bzero(salt, sizeof(salt));
 	if (key != NULL)
 		freezero(key, keylen + ivlen);
-	if (pubkeyblob != NULL) 
+	if (pubkeyblob != NULL)
 		freezero(pubkeyblob, pubkeylen);
-	if (b64 != NULL) 
+	if (b64 != NULL)
 		freezero(b64, strlen(b64));
 	return r;
 }

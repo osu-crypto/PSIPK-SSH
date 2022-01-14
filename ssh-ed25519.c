@@ -83,7 +83,7 @@ ssh_ed25519_sign(const struct sshkey *key, u_char **sigp, size_t *lenp,
 	r = 0;
  out:
 	sshbuf_free(b);
-	if (sig != NULL) 
+	if (sig != NULL)
 		freezero(sig, slen);
 
 	return r;
@@ -150,11 +150,102 @@ ssh_ed25519_verify(const struct sshkey *key,
 	/* success */
 	r = 0;
  out:
-	if (sm != NULL) 
+	if (sm != NULL)
 		freezero(sm, smlen);
-	if (m != NULL) 
+	if (m != NULL)
 		freezero(m, smlen); /* NB mlen may be invalid if r != 0 */
 	sshbuf_free(b);
 	free(ktype);
 	return r;
+}
+
+int
+ssh_ed25519_kem_dec(const struct sshkey *key, u_char **kem, size_t *klen,
+    const u_char *gr, size_t grlen)
+{
+	u_char *temp_kem = NULL;
+    const size_t gelen = 32;
+	int r, ret;
+
+	if (klen != NULL)
+		*klen = 0;
+	if (kem != NULL)
+		*kem = NULL;
+
+	if (key == NULL ||
+	    sshkey_type_plain(key->type) != KEY_ED25519 ||
+	    key->ed25519_sk == NULL || grlen != gelen)
+		return SSH_ERR_INVALID_ARGUMENT;
+	if ((temp_kem = malloc(gelen)) == NULL)
+		return SSH_ERR_ALLOC_FAIL;
+
+	if ((ret = crypto_kem_dec_ed25519(temp_kem, gr, key->ed25519_sk)) != 0 ) {
+		r = SSH_ERR_INVALID_ARGUMENT; /* XXX better error? */
+		goto out;
+	}
+
+	if (kem != NULL) {
+        *kem = temp_kem;
+        temp_kem = NULL;
+	}
+	if (klen != NULL)
+		*klen = gelen;
+	/* success */
+	r = 0;
+ out:
+	freezero(temp_kem, gelen);
+
+	return r;
+}
+
+int
+ssh_ed25519_kem_enc(u_char **c, u_char **r)
+{
+    const int rlen = 32;
+	if ((*r = malloc(rlen)) == NULL) {
+        return SSH_ERR_ALLOC_FAIL;
+	}
+
+	if ((*c = malloc(rlen)) == NULL) {
+        free(*r);
+        return SSH_ERR_ALLOC_FAIL;
+	}
+
+    crypto_sign_ed25519_keypair(*c, *r);
+    return 0;
+}
+
+// m is pk^r
+int
+ssh_ed25519_kem_msg(const struct sshkey *key, const u_char *r, u_char ** m)
+{
+	int ret = SSH_ERR_INTERNAL_ERROR;
+    const size_t mlen = 32;
+    u_char* temp_m = NULL;
+
+	if (key == NULL ||
+	    sshkey_type_plain(key->type) != KEY_ED25519 ||
+	    key->ed25519_pk == NULL) // || grlen != gelen) return SSH_ERR_INVALID_ARGUMENT;
+
+	if ((temp_m = malloc(mlen)) == NULL) {
+		ret = SSH_ERR_ALLOC_FAIL;
+		goto out;
+    }
+
+
+    ret = crypto_kem_dec_ed25519(temp_m, key->ed25519_pk, r);
+
+    if (ret == -1)
+    {
+        ret = SSH_ERR_INVALID_ARGUMENT;
+        goto out;
+    }
+
+    *m = temp_m;
+    temp_m = NULL;
+
+
+out:
+    freezero(temp_m, mlen);
+    return ret;
 }

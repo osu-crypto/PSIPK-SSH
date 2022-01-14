@@ -90,7 +90,6 @@ int	ssh_agent_bind_hostkey(int sock, const struct sshkey *key,
 /* smartcard */
 #define SSH_AGENTC_ADD_SMARTCARD_KEY		20
 #define SSH_AGENTC_REMOVE_SMARTCARD_KEY		21
-
 /* lock/unlock the agent */
 #define SSH_AGENTC_LOCK				22
 #define SSH_AGENTC_UNLOCK			23
@@ -110,6 +109,10 @@ int	ssh_agent_bind_hostkey(int sock, const struct sshkey *key,
 
 /* extended failure messages */
 #define SSH2_AGENT_FAILURE			30
+
+/* SSH-PSI extension */
+#define SSH2_AGENTC_MULTI_KEM_DEC_REQUEST 40
+
 
 /* additional error code for ssh.com's ssh-agent2 */
 #define SSH_COM_AGENT2_FAILURE			102

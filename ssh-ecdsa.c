@@ -33,6 +33,7 @@
 #include <openssl/bn.h>
 #include <openssl/ec.h>
 #include <openssl/ecdsa.h>
+#include <openssl/ecdh.h>
 #include <openssl/evp.h>
 
 #include <string.h>
@@ -196,5 +197,145 @@ ssh_ecdsa_verify(const struct sshkey *key,
 	free(ktype);
 	return ret;
 }
+
+// KEM.Msg(pk, r) -> pk^r; will be called for each pk
+// KEM.Enc(-pk-) -> g^r, r (sampled); sample constant, find g^r (same as dec)
+// KEM.Dec(sk, g^r) -> (g^r)^sk
+
+static int
+ssh_ecdsa_kem_dh(const EC_KEY *key, u_char **kem, size_t *klen,
+    const EC_GROUP* group, const EC_POINT *point_gr)
+{
+	int ret = SSH_ERR_INTERNAL_ERROR;
+
+    u_char * temp_kem = NULL;
+	BN_CTX *ctx = NULL;
+
+	if (klen != NULL)
+		*klen = 0;
+	if (kem != NULL)
+		*kem = NULL;
+
+    /* KEM start */
+	/* Calculate the size of the buffer for the shared secret */
+	int out_len = (EC_GROUP_get_degree(group) + 7)/8;
+
+	/* Allocate the memory for the shared secret */
+	if ((temp_kem = malloc(out_len)) == NULL) {
+		ret = SSH_ERR_ALLOC_FAIL;
+		goto out;
+	}
+
+	/* Derive the shared secret */
+	out_len = ECDH_compute_key(temp_kem, out_len, point_gr,
+						key, NULL);
+    /* KEM end */
+    if (out_len <= 0)
+    {
+        ret = -1; // BAD
+        goto out;
+    }
+
+	if (kem != NULL) {
+        *kem = temp_kem;
+        temp_kem = NULL;
+	}
+	if (klen != NULL)
+		*klen = out_len;
+	ret = 0;
+ out:
+	BN_CTX_free(ctx);
+    free(temp_kem);
+	return ret;
+}
+
+
+int
+ssh_ecdsa_kem_msg(const struct sshkey *key, u_char **m, size_t *mlen, EC_KEY *r)
+{
+    const EC_GROUP* group = EC_KEY_get0_group(key->ecdsa);
+    EC_POINT *point_pk = EC_KEY_get0_public_key((const EC_KEY*)key->ecdsa);
+    return ssh_ecdsa_kem_dh(r, m, mlen, group, point_pk);
+}
+
+int
+ssh_ecdsa_kem_enc(const struct sshkey *key, u_char **c, size_t *clen, EC_KEY **r)
+{
+	int ret = SSH_ERR_INTERNAL_ERROR;
+
+    const EC_GROUP* group;
+    const EC_POINT* pk;
+
+    EC_KEY *gr = NULL;
+	BN_CTX *ctx = NULL;
+
+    size_t bufsize = 0;
+    u_char *buf = NULL;
+
+	if ((ctx = BN_CTX_new()) == NULL)
+		return SSH_ERR_ALLOC_FAIL;
+
+	if ((gr = EC_KEY_new()) == NULL) {
+        ret = SSH_ERR_ALLOC_FAIL;
+        goto out;
+    }
+
+    group = EC_KEY_get0_group(key->ecdsa);
+    EC_KEY_set_group(gr, group);
+    EC_KEY_generate_key(gr);
+    pk = EC_KEY_get0_public_key(gr);
+
+    bufsize = EC_POINT_point2oct(group, pk, POINT_CONVERSION_COMPRESSED, NULL, 0, ctx);
+
+
+	if ((buf = malloc(bufsize)) == NULL) {
+		ret = SSH_ERR_ALLOC_FAIL;
+		goto out;
+	}
+
+    EC_POINT_point2oct(group, pk, POINT_CONVERSION_COMPRESSED, buf, bufsize, ctx);
+
+
+    *r = gr; // I'm not afraid
+    gr = NULL;
+
+    *c = buf;
+    buf = NULL;
+
+    *clen = bufsize;
+
+    ret = 0;
+
+out:
+    freezero(buf, bufsize);
+    EC_KEY_free(gr);
+	BN_CTX_free(ctx);
+
+    return ret;
+}
+
+// ECDH_compute_key for KEM.msg
+
+/* ARGSUSED */
+int
+ssh_ecdsa_kem_dec(const struct sshkey *key, u_char **kem, size_t *klen,
+    const u_char *gr, size_t grlen)
+{
+    int ret = SSH_ERR_INTERNAL_ERROR;
+
+    const EC_GROUP* group = EC_KEY_get0_group(key->ecdsa);
+	BN_CTX *ctx = NULL;
+
+	if ((ctx = BN_CTX_new()) == NULL)
+		return SSH_ERR_ALLOC_FAIL;
+
+    EC_POINT *point_gr = EC_POINT_new(group);
+    EC_POINT_oct2point(group, point_gr, gr, grlen, ctx);
+    ret = ssh_ecdsa_kem_dh(key->ecdsa, kem, klen, group, point_gr);
+
+    EC_POINT_free(point_gr);
+    return ret;
+}
+
 
 #endif /* WITH_OPENSSL && OPENSSL_HAS_ECC */
