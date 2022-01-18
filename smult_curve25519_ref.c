@@ -7,6 +7,7 @@ Derived from public domain code by D. J. Bernstein.
 */
 
 int crypto_scalarmult_curve25519(unsigned char *, const unsigned char *, const unsigned char *);
+int crypto_scalarmult_curve25519_noclamp(unsigned char *, const unsigned char *, const unsigned char *);
 
 static void add(unsigned int out[32],const unsigned int a[32],const unsigned int b[32])
 {
@@ -248,15 +249,23 @@ int crypto_scalarmult_curve25519(unsigned char *q,
   const unsigned char *n,
   const unsigned char *p)
 {
-  unsigned int work[96];
   unsigned char e[32];
-  unsigned int i;
   for (i = 0;i < 32;++i) e[i] = n[i];
   e[0] &= 248;
   e[31] &= 127;
   e[31] |= 64;
+  return crypto_scalarmult_curve25519_noclamp(q, e, p);
+}
+
+int crypto_scalarmult_curve25519_noclamp(unsigned char *q,
+  const unsigned char *n,
+  const unsigned char *p)
+{
+  unsigned int work[96];
+  unsigned char n[32];
+  unsigned int i;
   for (i = 0;i < 32;++i) work[i] = p[i];
-  mainloop(work,e);
+  mainloop(work,n);
   recip(work + 32,work + 32);
   mult(work + 64,work,work + 32);
   freeze(work + 64);

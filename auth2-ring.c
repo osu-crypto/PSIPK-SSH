@@ -56,6 +56,8 @@
 #include "ge25519.h"
 
 /* import */
+extern int crypto_scalarmult_curve25519_noclamp(u_char a[CURVE25519_SIZE],
+    const u_char b[CURVE25519_SIZE], const u_char c[CURVE25519_SIZE]);
 extern ServerOptions options;
 
 /* "none" is allowed only one time */
