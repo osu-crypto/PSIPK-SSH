@@ -44,12 +44,13 @@ PATHS= -DSSHDIR=\"$(sysconfdir)\" \
 	-D_PATH_PRIVSEP_CHROOT_DIR=\"$(PRIVSEP_PATH)\"
 
 CC=@CC@
+CXX=@CXX@
 LD=@LD@
 CFLAGS=@CFLAGS@
 CFLAGS_NOPIE=@CFLAGS_NOPIE@
-CPPFLAGS=-I. -I$(srcdir) @CPPFLAGS@ $(PATHS) @DEFS@
+CPPFLAGS=-I. -I$(srcdir) -I/usr/include/NTL @CPPFLAGS@ $(PATHS) @DEFS@
 PICFLAG=@PICFLAG@
-LIBS=@LIBS@
+LIBS=-lntl @LIBS@
 K5LIBS=@K5LIBS@
 GSSLIBS=@GSSLIBS@
 SSHDLIBS=@SSHDLIBS@
@@ -111,12 +112,12 @@ LIBSSH_OBJS=${LIBOPENSSH_OBJS} \
 	kexgexc.o kexgexs.o \
 	kexsntrup761x25519.o sntrup761.o kexgen.o \
 	sftp-realpath.o platform-pledge.o platform-tracing.o platform-misc.o \
-	sshbuf-io.o
+	sshbuf-io.o rijndael256.o poly_interpolate.o
 
 SKOBJS=	ssh-sk-client.o
 
 SSHOBJS= ssh.o readconf.o clientloop.o sshtty.o \
-	sshconnect.o sshconnect2.o mux.o $(SKOBJS)
+	sshconnect.o sshconnect2.o mux.o ssh_api_stubs.o $(SKOBJS)
 
 SSHDOBJS=sshd.o auth-rhosts.o auth-passwd.o \
 	audit.o audit-bsm.o audit-linux.o platform.o \
@@ -133,25 +134,25 @@ SSHDOBJS=sshd.o auth-rhosts.o auth-passwd.o \
 	sandbox-seccomp-filter.o sandbox-capsicum.o sandbox-pledge.o \
 	sandbox-solaris.o uidswap.o $(SKOBJS)
 
-SFTP_CLIENT_OBJS=sftp-common.o sftp-client.o sftp-glob.o
+SFTP_CLIENT_OBJS=sftp-common.o sftp-client.o sftp-glob.o ssh_api_stubs.o
 
 SCP_OBJS=	scp.o progressmeter.o $(SFTP_CLIENT_OBJS)
 
-SSHADD_OBJS=	ssh-add.o $(SKOBJS)
+SSHADD_OBJS=	ssh-add.o ssh_api_stubs.o $(SKOBJS)
 
-SSHAGENT_OBJS=	ssh-agent.o ssh-pkcs11-client.o $(SKOBJS)
+SSHAGENT_OBJS=	ssh-agent.o ssh-pkcs11-client.o ssh_api_stubs.o $(SKOBJS)
 
-SSHKEYGEN_OBJS=	ssh-keygen.o sshsig.o $(SKOBJS)
+SSHKEYGEN_OBJS=	ssh-keygen.o sshsig.o ssh_api_stubs.o $(SKOBJS)
 
-SSHKEYSIGN_OBJS=ssh-keysign.o readconf.o uidswap.o $(SKOBJS)
+SSHKEYSIGN_OBJS=ssh-keysign.o readconf.o uidswap.o ssh_api_stubs.o $(SKOBJS)
 
-P11HELPER_OBJS=	ssh-pkcs11-helper.o ssh-pkcs11.o $(SKOBJS)
+P11HELPER_OBJS=	ssh-pkcs11-helper.o ssh-pkcs11.o ssh_api_stubs.o $(SKOBJS)
 
-SKHELPER_OBJS=	ssh-sk-helper.o ssh-sk.o sk-usbhid.o
+SKHELPER_OBJS=	ssh-sk-helper.o ssh-sk.o sk-usbhid.o ssh_api_stubs.o
 
-SSHKEYSCAN_OBJS=ssh-keyscan.o $(SKOBJS)
+SSHKEYSCAN_OBJS=ssh-keyscan.o ssh_api_stubs.o $(SKOBJS)
 
-SFTPSERVER_OBJS=sftp-common.o sftp-server.o sftp-server-main.o
+SFTPSERVER_OBJS=sftp-common.o sftp-server.o sftp-server-main.o ssh_api_stubs.o
 
 SFTP_OBJS=	sftp.o progressmeter.o $(SFTP_CLIENT_OBJS)
 
@@ -199,6 +200,9 @@ $(srcdir)/configure: configure.ac $(srcdir)/m4/*.m4
 .c.o:
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
 
+.cpp.o:
+	$(CXX) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
+
 LIBCOMPAT=openbsd-compat/libopenbsd-compat.a
 $(LIBCOMPAT): always
 	(cd openbsd-compat && $(MAKE))
@@ -209,44 +213,44 @@ libssh.a: $(LIBSSH_OBJS)
 	$(RANLIB) $@
 
 ssh$(EXEEXT): $(LIBCOMPAT) libssh.a $(SSHOBJS)
-	$(LD) -o $@ $(SSHOBJS) $(LDFLAGS) -lssh -lopenbsd-compat $(LIBS) $(GSSLIBS)
+	$(CXX) -o $@ $(SSHOBJS) $(LDFLAGS) -lssh -lopenbsd-compat $(LIBS) $(GSSLIBS)
 
 sshd$(EXEEXT): libssh.a	$(LIBCOMPAT) $(SSHDOBJS)
-	$(LD) -o $@ $(SSHDOBJS) $(LDFLAGS) -lssh -lopenbsd-compat $(SSHDLIBS) $(LIBS) $(GSSLIBS) $(K5LIBS)
+	$(CXX) -o $@ $(SSHDOBJS) $(LDFLAGS) -lssh -lopenbsd-compat $(SSHDLIBS) $(LIBS) $(GSSLIBS) $(K5LIBS)
 
 scp$(EXEEXT): $(LIBCOMPAT) libssh.a $(SCP_OBJS)
-	$(LD) -o $@ $(SCP_OBJS) $(LDFLAGS) -lssh -lopenbsd-compat $(LIBS)
+	$(CXX) -o $@ $(SCP_OBJS) $(LDFLAGS) -lssh -lopenbsd-compat $(LIBS)
 
 ssh-add$(EXEEXT): $(LIBCOMPAT) libssh.a $(SSHADD_OBJS)
-	$(LD) -o $@ $(SSHADD_OBJS) $(LDFLAGS) -lssh -lopenbsd-compat $(LIBS)
+	$(CXX) -o $@ $(SSHADD_OBJS) $(LDFLAGS) -lssh -lopenbsd-compat $(LIBS)
 
 ssh-agent$(EXEEXT): $(LIBCOMPAT) libssh.a $(SSHAGENT_OBJS)
-	$(LD) -o $@ $(SSHAGENT_OBJS) $(LDFLAGS) -lssh -lopenbsd-compat $(LIBS)
+	$(CXX) -o $@ $(SSHAGENT_OBJS) $(LDFLAGS) -lssh -lopenbsd-compat $(LIBS)
 
 ssh-keygen$(EXEEXT): $(LIBCOMPAT) libssh.a $(SSHKEYGEN_OBJS)
-	$(LD) -o $@ $(SSHKEYGEN_OBJS) $(LDFLAGS) -lssh -lopenbsd-compat $(LIBS)
+	$(CXX) -o $@ $(SSHKEYGEN_OBJS) $(LDFLAGS) -lssh -lopenbsd-compat $(LIBS)
 
 ssh-keysign$(EXEEXT): $(LIBCOMPAT) libssh.a $(SSHKEYSIGN_OBJS)
-	$(LD) -o $@ $(SSHKEYSIGN_OBJS) $(LDFLAGS) -lssh -lopenbsd-compat $(LIBS)
+	$(CXX) -o $@ $(SSHKEYSIGN_OBJS) $(LDFLAGS) -lssh -lopenbsd-compat $(LIBS)
 
 ssh-pkcs11-helper$(EXEEXT): $(LIBCOMPAT) libssh.a $(P11HELPER_OBJS)
-	$(LD) -o $@ $(P11HELPER_OBJS) $(LDFLAGS) -lssh -lopenbsd-compat -lssh -lopenbsd-compat $(LIBS)
+	$(CXX) -o $@ $(P11HELPER_OBJS) $(LDFLAGS) -lssh -lopenbsd-compat -lssh -lopenbsd-compat $(LIBS)
 
 ssh-sk-helper$(EXEEXT): $(LIBCOMPAT) libssh.a $(SKHELPER_OBJS)
-	$(LD) -o $@ $(SKHELPER_OBJS) $(LDFLAGS) -lssh -lopenbsd-compat -lssh -lopenbsd-compat $(LIBS) $(LIBFIDO2)
+	$(CXX) -o $@ $(SKHELPER_OBJS) $(LDFLAGS) -lssh -lopenbsd-compat -lssh -lopenbsd-compat $(LIBS) $(LIBFIDO2)
 
 ssh-keyscan$(EXEEXT): $(LIBCOMPAT) libssh.a $(SSHKEYSCAN_OBJS)
-	$(LD) -o $@ $(SSHKEYSCAN_OBJS) $(LDFLAGS) -lssh -lopenbsd-compat -lssh $(LIBS)
+	$(CXX) -o $@ $(SSHKEYSCAN_OBJS) $(LDFLAGS) -lssh -lopenbsd-compat -lssh $(LIBS)
 
 sftp-server$(EXEEXT): $(LIBCOMPAT) libssh.a $(SFTPSERVER_OBJS)
-	$(LD) -o $@ $(SFTPSERVER_OBJS) $(LDFLAGS) -lssh -lopenbsd-compat -lssh $(LIBS)
+	$(CXX) -o $@ $(SFTPSERVER_OBJS) $(LDFLAGS) -lssh -lopenbsd-compat -lssh $(LIBS)
 
 sftp$(EXEEXT): $(LIBCOMPAT) libssh.a $(SFTP_OBJS)
-	$(LD) -o $@ $(SFTP_OBJS) $(LDFLAGS) -lssh -lopenbsd-compat $(LIBS) $(LIBEDIT)
+	$(CXX) -o $@ $(SFTP_OBJS) $(LDFLAGS) -lssh -lopenbsd-compat $(LIBS) $(LIBEDIT)
 
 # test driver for the loginrec code - not built by default
 logintest: logintest.o $(LIBCOMPAT) libssh.a loginrec.o
-	$(LD) -o $@ logintest.o $(LDFLAGS) loginrec.o -lopenbsd-compat -lssh $(LIBS)
+	$(CXX) -o $@ logintest.o $(LDFLAGS) loginrec.o -lopenbsd-compat -lssh $(LIBS)
 
 $(MANPAGES): $(MANPAGES_IN)
 	if test "$(MANTYPE)" = "cat"; then \

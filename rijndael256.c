@@ -7,6 +7,7 @@
 #include <tmmintrin.h>
 #include <wmmintrin.h>
 
+
 // This implement's Rijndael256 RotateRows step, then cancels out the RotateRows of AES so
 // that AES-NI can be used to implement Rijndael256.
 static inline void rotateRows256Undo128(__m128i state[2], bool encrypt) {

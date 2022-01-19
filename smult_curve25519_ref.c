@@ -8,6 +8,9 @@ Derived from public domain code by D. J. Bernstein.
 
 #include "smult_curve25519_ref.h"
 
+const unsigned char CURVE_WHOLE[32] = {6, 0};
+const unsigned char CURVE_TWIST[32] = {3, 0};
+
 static void add(unsigned int out[32],const unsigned int a[32],const unsigned int b[32])
 {
   unsigned int j;

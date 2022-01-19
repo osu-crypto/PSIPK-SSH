@@ -3,6 +3,7 @@
 #ifndef RIJNDAEL_256_H
 #define RIJNDAEL_256_H
 
+#include "config.h"
 #include "defines.h"
 #define RIJNDAEL256_ROUNDS 14
 
