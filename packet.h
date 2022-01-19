@@ -16,6 +16,7 @@
 #ifndef PACKET_H
 #define PACKET_H
 
+#include "ssh_api.h"
 #include <termios.h>
 
 #ifdef WITH_OPENSSL

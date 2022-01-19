@@ -26,7 +26,9 @@
 #ifndef SSHKEY_H
 #define SSHKEY_H
 
+#include <openssl/sha.h>
 #include <sys/types.h>
+#include "packet.h"
 
 #ifdef WITH_OPENSSL
 #include <openssl/rsa.h>
@@ -225,6 +227,7 @@ int		 sshkey_ec_validate_public(const EC_GROUP *, const EC_POINT *);
 int		 sshkey_ec_validate_private(const EC_KEY *);
 const char	*sshkey_ssh_name(const struct sshkey *);
 const char	*sshkey_ssh_name_plain(const struct sshkey *);
+size_t sshkey_ssh_idx(const struct sshkey *k);
 int		 sshkey_names_valid2(const char *, int);
 char		*sshkey_alg_list(int, int, int, char);
 
@@ -252,6 +255,7 @@ int	 sshkey_get_sigtype(const u_char *, size_t, char **);
 /* for ssh-psi */
 int	 sshkey_kem_dec(struct sshkey *, u_char **, size_t *,
     const u_char *, size_t);
+int sshkey_create_kem_enc(struct ssh *ssh, const struct sshkey **keys, size_t keyslen, u_char (*hashes)[SHA256_DIGEST_LENGTH]);
 
 
 /* for debug */
@@ -308,8 +312,8 @@ int ssh_ecdsa_sign(const struct sshkey *key, u_char **sigp, size_t *lenp,
     const u_char *data, size_t datalen, u_int compat);
 int ssh_ecdsa_kem_dec(const struct sshkey *key, u_char **kem, size_t *klen,
     const u_char *gr, size_t grlen);
-int ssh_ecdsa_kem_msg(const struct sshkey *key, u_char **m, size_t *mlen, EC_KEY *r);
-int ssh_ecdsa_kem_enc(const struct sshkey *key, u_char **c, size_t *clen, EC_KEY **r);
+int ssh_ecdsa_kem_msg(const struct sshkey *key, u_char **m, size_t *mlen, const EC_KEY *r);
+int ssh_ecdsa_kem_enc(const int nid, u_char **c, size_t *clen, void **r);
 int ssh_ecdsa_verify(const struct sshkey *key,
     const u_char *signature, size_t signaturelen,
     const u_char *data, size_t datalen, u_int compat);
@@ -321,8 +325,8 @@ int ssh_ed25519_sign(const struct sshkey *key, u_char **sigp, size_t *lenp,
     const u_char *data, size_t datalen, u_int compat);
 int ssh_ed25519_kem_dec(const struct sshkey *key, u_char **kem, size_t *klen,
     const u_char *gr, size_t grlen);
-int ssh_ed25519_kem_enc(u_char ** c, u_char **r);
-int ssh_ed25519_kem_msg(const struct sshkey *key, const u_char *r, u_char ** m);
+int ssh_ed25519_kem_enc(u_char ** c, size_t *clen, void **r);
+int ssh_ed25519_kem_msg(const struct sshkey *key, u_char **m, size_t *mlen, const u_char *r);
 int ssh_ed25519_verify(const struct sshkey *key,
     const u_char *signature, size_t signaturelen,
     const u_char *data, size_t datalen, u_int compat);

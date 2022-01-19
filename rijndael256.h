@@ -3,17 +3,18 @@
 #ifndef RIJNDAEL_256_H
 #define RIJNDAEL_256_H
 
-#define RIJNDAEL256_ROUNDS 14;
+#include "defines.h"
+#define RIJNDAEL256_ROUNDS 14
 
-struct rijndael256_round_keys
+typedef struct
 {
 	u_char rounds[RIJNDAEL256_ROUNDS + 1][32];
-};
+} rijndael256_round_keys;
 
-struct rijndael256_dec_round_keys
+typedef struct
 {
 	u_char rounds[RIJNDAEL256_ROUNDS + 1][32];
-};
+} rijndael256_dec_round_keys;
 
 void rijndael256_set_key(rijndael256_round_keys* round_keys, const u_char* key);
 void rijndael256_set_key_dec(rijndael256_dec_round_keys* round_keys_dec, const rijndael256_round_keys* round_keys_enc);

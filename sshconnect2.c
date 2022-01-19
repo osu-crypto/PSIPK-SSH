@@ -375,7 +375,7 @@ static int input_userauth_passwd_changereq(int, u_int32_t, struct ssh *);
 
 static int userauth_none(struct ssh *);
 static int userauth_pubkey(struct ssh *);
-static int userauth_ring(struct ssh *);
+static int userauth_psi(struct ssh *);
 static int userauth_passwd(struct ssh *);
 static int userauth_kbdint(struct ssh *);
 static int userauth_hostbased(struct ssh *);
@@ -414,11 +414,11 @@ Authmethod authmethods[] = {
 		NULL,
 		&options.hostbased_authentication,
 		NULL},
-	{"ring",
-		userauth_ring,
+	{"psi",
+		userauth_psi,
 		NULL,
 		// XXX add option
-		&options.ring_authentication,
+		&options.psi_authentication,
 		NULL},
 	{"publickey",
 		userauth_pubkey,
@@ -1993,8 +1993,9 @@ userauth_pubkey(struct ssh *ssh)
 	return (0);
 }
 
+// Client-side
 static int
-userauth_ring(struct ssh *ssh)
+userauth_psi(struct ssh *ssh)
 {
 	Authctxt *authctxt = (Authctxt *)ssh->authctxt;
     int r;
@@ -2007,7 +2008,7 @@ userauth_ring(struct ssh *ssh)
 	    (r = sshpkt_send(ssh)) != 0)
 		fatal_fr(r, "send packet");
 
-	ssh_dispatch_set(ssh, SSH2_MSG_USERAUTH_RING_OK, &input_userauth_ring_ok);
+	ssh_dispatch_set(ssh, SSH2_MSG_USERAUTH_PSI_KEM, &input_userauth_ring_ok);
 
     // sent
 	return (1);

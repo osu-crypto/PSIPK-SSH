@@ -116,11 +116,16 @@
 
 /* user authentication: method specific, can be reused */
 
-#define SSH2_MSG_USERAUTH_PK_OK				60
-#define SSH2_MSG_USERAUTH_RING_OK			60
+    #define SSH2_MSG_USERAUTH_PK_OK				60
 #define SSH2_MSG_USERAUTH_PASSWD_CHANGEREQ		60
 #define SSH2_MSG_USERAUTH_INFO_REQUEST			60
 #define SSH2_MSG_USERAUTH_INFO_RESPONSE			61
+
+/* PSI Authentication */
+#define SSH2_MSG_USERAUTH_PSI_KEM			60
+#define SSH2_MSG_USERAUTH_PSI_INTERPOLATE	61
+#define SSH2_MSG_USERAUTH_PSI_CHAL          62
+#define SSH2_MSG_USERAUTH_PSI_PROOF         63
 
 /* connection protocol: generic */
 

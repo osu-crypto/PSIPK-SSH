@@ -1117,7 +1117,7 @@ parse_time:
 		goto parse_multistate;
 
 	case oRingAuthentication:
-		intptr = &options->ring_authentication;
+		intptr = &options->psi_authentication;
 		goto parse_flag;
 
 	case oHostbasedAuthentication:
@@ -2347,7 +2347,7 @@ initialize_options(Options * options)
 	options->fwd_opts.streamlocal_bind_mask = (mode_t)-1;
 	options->fwd_opts.streamlocal_bind_unlink = -1;
 	options->pubkey_authentication = -1;
-	options->ring_authentication = -1;
+	options->psi_authentication = -1;
 	options->gss_authentication = -1;
 	options->gss_deleg_creds = -1;
 	options->password_authentication = -1;
@@ -3311,7 +3311,7 @@ dump_client_config(Options *o, const char *host)
 	dump_cfg_fmtint(oPermitLocalCommand, o->permit_local_command);
 	dump_cfg_fmtint(oProxyUseFdpass, o->proxy_use_fdpass);
 	dump_cfg_fmtint(oPubkeyAuthentication, o->pubkey_authentication);
-	dump_cfg_fmtint(oRingAuthentication, o->ring_authentication);
+	dump_cfg_fmtint(oRingAuthentication, o->psi_authentication);
 	dump_cfg_fmtint(oRequestTTY, o->request_tty);
 	dump_cfg_fmtint(oSessionType, o->session_type);
 	dump_cfg_fmtint(oStdinNull, o->stdin_null);

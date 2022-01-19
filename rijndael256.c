@@ -1,5 +1,7 @@
 #include "rijndael256.h"
 
+#include <string.h>
+#include <stdbool.h>
 #include <emmintrin.h>
 #include <smmintrin.h>
 #include <tmmintrin.h>
@@ -49,7 +51,7 @@ static inline void rotateRows256Undo128(__m128i state[2], bool encrypt) {
 	state[1] = _mm_shuffle_epi8(b1_blended, perm);
 }
 
-static inline void roundEnc(__m128i[2] state, const __m128i[2] roundKey)
+static inline void roundEnc(__m128i state[2], const __m128i roundKey[2])
 {
 	// Use the AES round function to implement the Rijndael256 round function.
 	rotateRows256Undo128(state, true);
@@ -57,14 +59,14 @@ static inline void roundEnc(__m128i[2] state, const __m128i[2] roundKey)
 	state[1] = _mm_aesenc_si128(state[1], roundKey[1]);
 }
 
-static inline void finalEnc(__m128i[2] state, const __m128i[2] roundKey)
+static inline void finalEnc(__m128i state[2], const __m128i roundKey[2])
 {
 	rotateRows256Undo128(state, true);
 	state[0] = _mm_aesenclast_si128(state[0], roundKey[0]);
 	state[1] = _mm_aesenclast_si128(state[1], roundKey[1]);
 }
 
-static inline void roundDec(__m128i[2] state, const __m128i[2] roundKey)
+static inline void roundDec(__m128i state[2], const __m128i roundKey[2])
 {
 	// Use the AES round function to implement the Rijndael256 round function.
 	rotateRows256Undo128(state, false);
@@ -72,7 +74,7 @@ static inline void roundDec(__m128i[2] state, const __m128i[2] roundKey)
 	state[1] = _mm_aesdec_si128(state[1], roundKey[1]);
 }
 
-static inline void finalDec(__m128i[2] state, const __m128i[2] roundKey)
+static inline void finalDec(__m128i state[2], const __m128i roundKey[2])
 {
 	rotateRows256Undo128(state, false);
 	state[0] = _mm_aesdeclast_si128(state[0], roundKey[0]);
@@ -82,10 +84,10 @@ static inline void finalDec(__m128i[2] state, const __m128i[2] roundKey)
 void rijndael256_enc_block(const rijndael256_round_keys* round_keys, const u_char* plaintext, u_char* ciphertext)
 {
 	__m128i block[2];
-	block[0] = _mm_xor_si128(_mm_loadu_si128(&plaintext[0   ]),
-	                         _mm_loadu_si128(&round_keys->rounds[0][0]));
-	block[1] = _mm_xor_si128(_mm_loadu_si128(&plaintext[0x10]),
-	                         _mm_loadu_si128(&round_keys->rounds[0][0x10]));
+	block[0] = _mm_xor_si128(_mm_loadu_si128((const __m128i *)&plaintext[0   ]),
+	                         _mm_loadu_si128((const __m128i *)&round_keys->rounds[0][0]));
+	block[1] = _mm_xor_si128(_mm_loadu_si128((const __m128i *)&plaintext[0x10]),
+	                         _mm_loadu_si128((const __m128i *)&round_keys->rounds[0][0x10]));
 
 	// Each iteration depends on the previous, so unrolling the outer loop isn't useful,
 	// especially because there are a decent number of operations in each iteration.
@@ -95,27 +97,27 @@ void rijndael256_enc_block(const rijndael256_round_keys* round_keys, const u_cha
 	for (int i = 1; i < RIJNDAEL256_ROUNDS; ++i)
 	{
 		__m128i roundKey[2];
-		roundKey[0] = _mm_loadu_si128(&round_keys->rounds[i][0]);
-		roundKey[1] = _mm_loadu_si128(&round_keys->rounds[i][0x10]);
+		roundKey[0] = _mm_loadu_si128((const __m128i *)&round_keys->rounds[i][0]);
+		roundKey[1] = _mm_loadu_si128((const __m128i *)&round_keys->rounds[i][0x10]);
 		roundEnc(block, roundKey);
 	}
 
 	__m128i roundKey[2];
-	roundKey[0] = _mm_loadu_si128(&round_keys->rounds[RIJNDAEL256_ROUNDS][0]);
-	roundKey[1] = _mm_loadu_si128(&round_keys->rounds[RIJNDAEL256_ROUNDS][0x10]);
-	finalEnc(blocks, roundKey);
+	roundKey[0] = _mm_loadu_si128((const __m128i *)&round_keys->rounds[RIJNDAEL256_ROUNDS][0]);
+	roundKey[1] = _mm_loadu_si128((const __m128i *)&round_keys->rounds[RIJNDAEL256_ROUNDS][0x10]);
+	finalEnc(block, roundKey);
 
-	_mm_storeu_si128(&ciphertext[0   ], block[0]);
-	_mm_storeu_si128(&ciphertext[0x10], block[1]);
+	_mm_storeu_si128((__m128i *)&ciphertext[0   ], block[0]);
+	_mm_storeu_si128((__m128i *)&ciphertext[0x10], block[1]);
 }
 
 void rijndael256_dec_block(const rijndael256_dec_round_keys* round_keys, const u_char* ciphertext, u_char* plaintext)
 {
 	__m128i block[2];
-	block[0] = _mm_xor_si128(_mm_loadu_si128(&plaintext[0   ]),
-	                         _mm_loadu_si128(&round_keys->rounds[RIJNDAEL256_ROUNDS][0]));
-	block[1] = _mm_xor_si128(_mm_loadu_si128(&plaintext[0x10]),
-	                         _mm_loadu_si128(&round_keys->rounds[RIJNDAEL256_ROUNDS][0x10]));
+	block[0] = _mm_xor_si128(_mm_loadu_si128((const __m128i *)&plaintext[0   ]),
+	                         _mm_loadu_si128((const __m128i *)&round_keys->rounds[RIJNDAEL256_ROUNDS][0]));
+	block[1] = _mm_xor_si128(_mm_loadu_si128((const __m128i *)&plaintext[0x10]),
+	                         _mm_loadu_si128((const __m128i *)&round_keys->rounds[RIJNDAEL256_ROUNDS][0x10]));
 
 	// Each iteration depends on the previous, so unrolling the outer loop isn't useful,
 	// especially because there are a decent number of operations in each iteration.
@@ -125,54 +127,54 @@ void rijndael256_dec_block(const rijndael256_dec_round_keys* round_keys, const u
 	for (int i = RIJNDAEL256_ROUNDS - 1; i > 0; --i)
 	{
 		__m128i roundKey[2];
-		roundKey[0] = _mm_loadu_si128(&round_keys->rounds[i][0]);
-		roundKey[1] = _mm_loadu_si128(&round_keys->rounds[i][0x10]);
+		roundKey[0] = _mm_loadu_si128((const __m128i *)&round_keys->rounds[i][0]);
+		roundKey[1] = _mm_loadu_si128((const __m128i *)&round_keys->rounds[i][0x10]);
 		roundDec(block, roundKey);
 	}
 
 	__m128i roundKey[2];
-	roundKey[0] = _mm_loadu_si128(&round_keys->rounds[0][0]);
-	roundKey[1] = _mm_loadu_si128(&round_keys->rounds[0][0x10]);
-	finalDec(blocks, roundKey);
+	roundKey[0] = _mm_loadu_si128((const __m128i *)&round_keys->rounds[0][0]);
+	roundKey[1] = _mm_loadu_si128((const __m128i *)&round_keys->rounds[0][0x10]);
+	finalDec(block, roundKey);
 
-	_mm_storeu_si128(&plaintext[0   ], block[0]);
-	_mm_storeu_si128(&plaintext[0x10], block[1]);
+	_mm_storeu_si128((__m128i *)&plaintext[0   ], block[0]);
+	_mm_storeu_si128((__m128i *)&plaintext[0x10], block[1]);
 }
 
-#define EXPAND_ROUND(round, round_constant, roundKeys) \\
-	do \\
-	{ \\
-		__m128i t1 = roundKeys[round - 1][0]; \\
-		__m128i t2; \\
-		__m128i t3 = roundKeys[round - 1][1]; \\
-		__m128i t4; \\
-		t2 = _mm_aeskeygenassist_si128(t3, round_constant); \\
-		t2 = _mm_shuffle_epi32(t2, 0xff); \\
-		t4 = _mm_slli_si128(t1, 0x4); \\
-		t1 = _mm_xor_si128(t1, t4); \\
-		t4 = _mm_slli_si128(t4, 0x4); \\
-		t1 = _mm_xor_si128(t1, t4); \\
-		t4 = _mm_slli_si128(t4, 0x4); \\
-		t1 = _mm_xor_si128(t1, t4); \\
-		t1 = _mm_xor_si128(t1, t2); \\
-		roundKeys[round][0] = t1; \\
-		t4 = _mm_aeskeygenassist_si128(t1, 0x00); \\
-		t2 = _mm_shuffle_epi32(t4, 0xaa); \\
-		t4 = _mm_slli_si128(t3, 0x4); \\
-		t3 = _mm_xor_si128(t3, t4); \\
-		t4 = _mm_slli_si128(t4, 0x4); \\
-		t3 = _mm_xor_si128(t3, t4); \\
-		t4 = _mm_slli_si128(t4, 0x4); \\
-		t3 = _mm_xor_si128(t3, t4); \\
-		t3 = _mm_xor_si128(t3, t2); \\
-		roundKeys[round][1] = t3; \\
+#define EXPAND_ROUND(round, round_constant, roundKeys) \
+	do \
+	{ \
+		__m128i t1 = roundKeys[round - 1][0]; \
+		__m128i t2; \
+		__m128i t3 = roundKeys[round - 1][1]; \
+		__m128i t4; \
+		t2 = _mm_aeskeygenassist_si128(t3, round_constant); \
+		t2 = _mm_shuffle_epi32(t2, 0xff); \
+		t4 = _mm_slli_si128(t1, 0x4); \
+		t1 = _mm_xor_si128(t1, t4); \
+		t4 = _mm_slli_si128(t4, 0x4); \
+		t1 = _mm_xor_si128(t1, t4); \
+		t4 = _mm_slli_si128(t4, 0x4); \
+		t1 = _mm_xor_si128(t1, t4); \
+		t1 = _mm_xor_si128(t1, t2); \
+		roundKeys[round][0] = t1; \
+		t4 = _mm_aeskeygenassist_si128(t1, 0x00); \
+		t2 = _mm_shuffle_epi32(t4, 0xaa); \
+		t4 = _mm_slli_si128(t3, 0x4); \
+		t3 = _mm_xor_si128(t3, t4); \
+		t4 = _mm_slli_si128(t4, 0x4); \
+		t3 = _mm_xor_si128(t3, t4); \
+		t4 = _mm_slli_si128(t4, 0x4); \
+		t3 = _mm_xor_si128(t3, t4); \
+		t3 = _mm_xor_si128(t3, t2); \
+		roundKeys[round][1] = t3; \
 	} while(0)
 
 void rijndael256_set_key(rijndael256_round_keys* round_keys, const u_char* key)
 {
 	__m128i roundKeys[RIJNDAEL256_ROUNDS + 1][2];
-	roundKeys[0][0] = _mm_loadu_si128(&key[0]);
-	roundKeys[0][1] = _mm_loadu_si128(&key[0x10]);
+	roundKeys[0][0] = _mm_loadu_si128((const __m128i *)&key[0]);
+	roundKeys[0][1] = _mm_loadu_si128((const __m128i *)&key[0x10]);
 
 	EXPAND_ROUND( 1, 0x01, roundKeys);
 	EXPAND_ROUND( 2, 0x02, roundKeys);
@@ -191,19 +193,18 @@ void rijndael256_set_key(rijndael256_round_keys* round_keys, const u_char* key)
 
 	for (int i = 0; i <= RIJNDAEL256_ROUNDS; ++i)
 	{
-		_mm_storeu_si128(&round_keys->rounds[i][0   ], roundKeys[i][0]);
-		_mm_storeu_si128(&round_keys->rounds[i][0x10], roundKeys[i][1]);
+		_mm_storeu_si128((__m128i *)&round_keys->rounds[i][0   ], roundKeys[i][0]);
+		_mm_storeu_si128((__m128i *)&round_keys->rounds[i][0x10], roundKeys[i][1]);
 	}
 }
 
-void rijndael256_set_key_dec(rijndael256_dec_round_keys* round_keys_dec, const rijndael256_round_keys* round_keys_enc);
+void rijndael256_set_key_dec(rijndael256_dec_round_keys* round_keys_dec, const rijndael256_round_keys* round_keys_enc)
 {
-	mRoundKey[0] = enc.mRoundKey[0];
 	memcpy(&round_keys_dec->rounds[0][0], &round_keys_enc->rounds[0][0], 32);
-	for (int i = 1; i < rounds; i++)
+	for (int i = 1; i < RIJNDAEL256_ROUNDS; i++)
 		for (int j = 0; j < 2; j++)
-			_mm_storeu_si128(&round_keys_dec->rounds[i][j*0x10],
-			                 _mm_aesimc_si128(_mm_loadu_si128(&round_keys_enc->rounds[i][j*0x10])));
+			_mm_storeu_si128((__m128i *)&round_keys_dec->rounds[i][j*0x10],
+			                 _mm_aesimc_si128(_mm_loadu_si128((__m128i *)&round_keys_enc->rounds[i][j*0x10])));
 	memcpy(&round_keys_dec->rounds[RIJNDAEL256_ROUNDS][0],
 	       &round_keys_enc->rounds[RIJNDAEL256_ROUNDS][0], 32);
 }

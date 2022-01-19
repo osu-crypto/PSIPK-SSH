@@ -26,7 +26,10 @@
  */
 
 #include "includes.h"
+#include "kex.h"
+#include "openbsd-compat/openbsd-compat.h"
 
+#include <openssl/ec.h>
 #include <sys/types.h>
 #include <netinet/in.h>
 
@@ -58,6 +61,7 @@
 #include "sshkey.h"
 #include "match.h"
 #include "ssh-sk.h"
+#include "packet.h"
 
 #ifdef WITH_XMSS
 #include "sshkey-xmss.h"
@@ -165,6 +169,173 @@ static const struct keytype keytypes[] = {
 	{ NULL, NULL, NULL, -1, -1, 0, 0 }
 };
 
+#define NUM_KEYTYPES (sizeof(keytypes)/sizeof(keytypes[0]) - 1)
+
+
+// 'ssh-psi'||session_id||pk_digest||m for each zip(m, pk)
+static int
+sshkey_prepare_psi_input(struct ssh *ssh, const struct sshkey *key, const u_char *msg, size_t msglen, u_char digest[SHA256_DIGEST_LENGTH])
+{
+    int ret = SSH_ERR_INTERNAL_ERROR;
+	struct ssh_digest_ctx *hashctx = NULL;
+	struct sshbuf *b = NULL;
+
+
+    if ((b = sshbuf_new()) == NULL)
+        return SSH_ERR_ALLOC_FAIL;
+
+    u_char *keyhash = NULL;
+    size_t keyhashlen = 0;
+
+    if ((ret = sshkey_fingerprint_raw(key, SSH_DIGEST_SHA256, &keyhash, &keyhashlen)) != 0)
+        goto out;
+
+    if ((ret = sshbuf_put_cstring(b, "ssh-psi")) != 0 ||
+        (ret = sshbuf_putb(b, ssh->kex->session_id)) != 0 ||
+        (ret = sshbuf_put(b, keyhash, keyhashlen)) != 0 ||
+        (ret = sshbuf_put_string(b, msg, msglen)) != 0) {
+        goto out;
+    }
+
+    if ((ret = ssh_digest_buffer(SSH_DIGEST_SHA256, b, digest, SHA256_DIGEST_LENGTH)) != 0) {
+        goto out;
+    }
+
+  out:
+    freezero(keyhash, keyhashlen);
+	ssh_digest_free(hashctx);
+    sshbuf_free(b);
+    return ret;
+}
+
+// (Order matters for latency)
+// Serialize cs to send them
+// Send them!
+// EC.msg() for all rs and cs (free for RSA but we ignore that)
+int
+sshkey_create_kem_enc(struct ssh *ssh, const struct sshkey **keys, size_t keyslen, u_char (*hashes)[SHA256_DIGEST_LENGTH])
+{
+    struct bucket {
+        void *r;
+        u_char *c;
+        size_t clen;
+    };
+
+    int err;
+    size_t unique_keytypes = 0;
+    struct bucket buckets[NUM_KEYTYPES] = {0};
+
+
+	if ((err = sshpkt_start(ssh, SSH2_MSG_USERAUTH_PSI_KEM)) != 0)
+        return err;
+
+    for (size_t i=0; i < keyslen; i++) {
+        size_t j = sshkey_ssh_idx(keys[i]);
+
+        if (keytypes[j].type != -1 && buckets[j].c == NULL)
+        {
+            switch(keytypes[j].type) {
+                #ifdef WITH_OPENSSL
+                # ifdef OPENSSL_HAS_ECC
+                    case KEY_ECDSA_CERT:
+                    case KEY_ECDSA:
+                        ssh_ecdsa_kem_enc(keys[i]->ecdsa_nid, &buckets[j].c, &buckets[j].clen, &buckets[j].r);
+                        unique_keytypes++;
+                        break;
+                # endif /* OPENSSL_HAS_ECC */
+                    case KEY_RSA_CERT:
+                    case KEY_RSA:
+                        break;
+                #endif /* WITH_OPENSSL */
+                    case KEY_ED25519:
+                    case KEY_ED25519_CERT:
+                        // XXX rlen stuff?
+                        ssh_ed25519_kem_enc(&buckets[j].c, &buckets[j].clen, &buckets[j].r);
+                        unique_keytypes++;
+                        break;
+                    default:
+                        break;
+            }
+        }
+    }
+
+    // Serialize and send ASAP
+    if ((err = sshpkt_put_u64(ssh, unique_keytypes)) != 0)
+        return err;
+
+    for (size_t j=0; j < NUM_KEYTYPES; j++) {
+        if (buckets[j].c == NULL)
+            continue;
+
+        if ((err = sshpkt_put_cstring(ssh, keytypes[j].name)) != 0)
+            return err;
+
+        if ((err = sshpkt_put_string(ssh, buckets[j].c, buckets[j].clen)) != 0)
+            return err;
+    }
+
+	if ((err = sshpkt_send(ssh)) != 0)
+		return err;
+
+    // Loop through the keys calling msg
+    for (size_t i=0; i < keyslen; i++) {
+        size_t j = sshkey_ssh_idx(keys[i]);
+        if (keytypes[j].type != -1 && buckets[j].c != NULL)
+        {
+            u_char *msg;
+            size_t mlen;
+            switch(keytypes[j].type) {
+                #ifdef WITH_OPENSSL
+                # ifdef OPENSSL_HAS_ECC
+                    case KEY_ECDSA_CERT:
+                    case KEY_ECDSA:
+                        ssh_ecdsa_kem_msg(keys[i], &msg, &mlen, buckets[j].r);
+                        sshkey_prepare_psi_input(ssh, keys[i], msg, mlen, hashes[i]);
+                        break;
+                # endif /* OPENSSL_HAS_ECC */
+                    case KEY_RSA_CERT:
+                    case KEY_RSA:
+                        break;
+                #endif /* WITH_OPENSSL */
+                    case KEY_ED25519:
+                    case KEY_ED25519_CERT:
+                        ssh_ed25519_kem_msg(keys[i], &msg, &mlen, buckets[j].r);
+                        sshkey_prepare_psi_input(ssh, keys[i], msg, mlen, hashes[i]);
+                        break;
+                    default:
+                        break;
+            }
+        }
+    }
+
+    for (size_t i=0; i < NUM_KEYTYPES; i++) {
+        if (buckets[i].c == NULL)
+            continue;
+
+        switch(keytypes[i].type) {
+            #ifdef WITH_OPENSSL
+            # ifdef OPENSSL_HAS_ECC
+                case KEY_ECDSA_CERT:
+                case KEY_ECDSA:
+                    EC_KEY_free(buckets[i].r);
+                    break;
+            # endif /* OPENSSL_HAS_ECC */
+                case KEY_RSA_CERT:
+                case KEY_RSA:
+                    break;
+            #endif /* WITH_OPENSSL */
+                case KEY_ED25519:
+                case KEY_ED25519_CERT:
+                    freezero(buckets[i].r, 32);
+                    break;
+                default:
+                    break;
+        }
+    }
+
+    return err;
+}
+
 const char *
 sshkey_type(const struct sshkey *k)
 {
@@ -189,6 +360,19 @@ sshkey_ssh_name_from_type_nid(int type, int nid)
 	return "ssh-unknown";
 }
 
+static size_t
+sshkey_ssh_idx_from_type_nid(int type, int nid)
+{
+	const struct keytype *kt;
+
+	for (size_t i=0; i < NUM_KEYTYPES; i++) {
+        kt = &keytypes[i];
+		if (kt->type == type && (kt->nid == 0 || kt->nid == nid))
+			return i;
+	}
+	return NUM_KEYTYPES;
+}
+
 int
 sshkey_type_is_cert(int type)
 {
@@ -205,6 +389,12 @@ const char *
 sshkey_ssh_name(const struct sshkey *k)
 {
 	return sshkey_ssh_name_from_type_nid(k->type, k->ecdsa_nid);
+}
+
+size_t
+sshkey_ssh_idx(const struct sshkey *k)
+{
+	return sshkey_ssh_idx_from_type_nid(k->type, k->ecdsa_nid);
 }
 
 const char *

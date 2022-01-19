@@ -251,19 +251,18 @@ ssh_ecdsa_kem_dh(const EC_KEY *key, u_char **kem, size_t *klen,
 
 
 int
-ssh_ecdsa_kem_msg(const struct sshkey *key, u_char **m, size_t *mlen, EC_KEY *r)
+ssh_ecdsa_kem_msg(const struct sshkey *key, u_char **m, size_t *mlen, const EC_KEY *r)
 {
     const EC_GROUP* group = EC_KEY_get0_group(key->ecdsa);
-    EC_POINT *point_pk = EC_KEY_get0_public_key((const EC_KEY*)key->ecdsa);
+    const EC_POINT *point_pk = EC_KEY_get0_public_key(key->ecdsa);
     return ssh_ecdsa_kem_dh(r, m, mlen, group, point_pk);
 }
 
 int
-ssh_ecdsa_kem_enc(const struct sshkey *key, u_char **c, size_t *clen, EC_KEY **r)
+ssh_ecdsa_kem_enc(const int nid, u_char **c, size_t *clen, void **r)
 {
 	int ret = SSH_ERR_INTERNAL_ERROR;
 
-    const EC_GROUP* group;
     const EC_POINT* pk;
 
     EC_KEY *gr = NULL;
@@ -272,21 +271,22 @@ ssh_ecdsa_kem_enc(const struct sshkey *key, u_char **c, size_t *clen, EC_KEY **r
     size_t bufsize = 0;
     u_char *buf = NULL;
 
+    const EC_GROUP *group;
+
 	if ((ctx = BN_CTX_new()) == NULL)
 		return SSH_ERR_ALLOC_FAIL;
 
-	if ((gr = EC_KEY_new()) == NULL) {
+	if ((gr = EC_KEY_new_by_curve_name(nid)) == NULL) {
         ret = SSH_ERR_ALLOC_FAIL;
         goto out;
     }
 
-    group = EC_KEY_get0_group(key->ecdsa);
-    EC_KEY_set_group(gr, group);
+    group = EC_KEY_get0_group(gr);
+
     EC_KEY_generate_key(gr);
     pk = EC_KEY_get0_public_key(gr);
 
     bufsize = EC_POINT_point2oct(group, pk, POINT_CONVERSION_COMPRESSED, NULL, 0, ctx);
-
 
 	if ((buf = malloc(bufsize)) == NULL) {
 		ret = SSH_ERR_ALLOC_FAIL;
@@ -294,7 +294,6 @@ ssh_ecdsa_kem_enc(const struct sshkey *key, u_char **c, size_t *clen, EC_KEY **r
 	}
 
     EC_POINT_point2oct(group, pk, POINT_CONVERSION_COMPRESSED, buf, bufsize, ctx);
-
 
     *r = gr; // I'm not afraid
     gr = NULL;

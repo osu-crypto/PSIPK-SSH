@@ -199,17 +199,19 @@ ssh_ed25519_kem_dec(const struct sshkey *key, u_char **kem, size_t *klen,
 }
 
 int
-ssh_ed25519_kem_enc(u_char **c, u_char **r)
+ssh_ed25519_kem_enc(u_char **c, size_t *clen, void **r)
 {
-    const int rlen = 32;
-	if ((*r = malloc(rlen)) == NULL) {
+    const int len = 32;
+	if ((*r = malloc(len)) == NULL) {
         return SSH_ERR_ALLOC_FAIL;
 	}
 
-	if ((*c = malloc(rlen)) == NULL) {
+	if ((*c = malloc(len)) == NULL) {
         free(*r);
         return SSH_ERR_ALLOC_FAIL;
 	}
+
+    *clen = len;
 
     crypto_sign_ed25519_keypair(*c, *r);
     return 0;
@@ -217,17 +219,17 @@ ssh_ed25519_kem_enc(u_char **c, u_char **r)
 
 // m is pk^r
 int
-ssh_ed25519_kem_msg(const struct sshkey *key, const u_char *r, u_char ** m)
+ssh_ed25519_kem_msg(const struct sshkey *key, u_char **m, size_t *mlen, const u_char *r)
 {
 	int ret = SSH_ERR_INTERNAL_ERROR;
-    const size_t mlen = 32;
+    const size_t len = 32;
     u_char* temp_m = NULL;
 
 	if (key == NULL ||
 	    sshkey_type_plain(key->type) != KEY_ED25519 ||
 	    key->ed25519_pk == NULL) // || grlen != gelen) return SSH_ERR_INVALID_ARGUMENT;
 
-	if ((temp_m = malloc(mlen)) == NULL) {
+	if ((temp_m = malloc(len)) == NULL) {
 		ret = SSH_ERR_ALLOC_FAIL;
 		goto out;
     }
@@ -244,8 +246,9 @@ ssh_ed25519_kem_msg(const struct sshkey *key, const u_char *r, u_char ** m)
     *m = temp_m;
     temp_m = NULL;
 
+    *mlen = len;
 
 out:
-    freezero(temp_m, mlen);
+    freezero(temp_m, len);
     return ret;
 }
