@@ -25,7 +25,15 @@
  */
 
 #include "includes.h"
+#include "openbsd-compat/openbsd-compat.h"
+#include "poly_interpolate.h"
+#include "digest.h"
+#include "rijndael256.h"
+#include "smult_curve25519_ref.h"
+#include "ssh_api.h"
 
+#include <stddef.h>
+#include <stdlib.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
@@ -370,7 +378,6 @@ static int input_userauth_banner(int, u_int32_t, struct ssh *);
 static int input_userauth_error(int, u_int32_t, struct ssh *);
 static int input_userauth_info_req(int, u_int32_t, struct ssh *);
 static int input_userauth_pk_ok(int, u_int32_t, struct ssh *);
-static int input_userauth_ring_ok(int, u_int32_t, struct ssh *);
 static int input_userauth_passwd_changereq(int, u_int32_t, struct ssh *);
 
 static int userauth_none(struct ssh *);
@@ -674,6 +681,7 @@ input_userauth_failure(int type, u_int32_t seq, struct ssh *ssh)
 	return 0;
 }
 
+
 /*
  * Format an identity for logging including filename, key type, fingerprint
  * and location (agent, etc.). Caller must free.
@@ -704,75 +712,277 @@ format_identity(Identity *id)
 	return ret;
 }
 
-/* ARGSUSED */
+struct stage2data {
+    u_char (*hashes)[SHA256_DIGEST_LENGTH];
+    size_t hashlength;
+};
+
 static int
-input_userauth_ring_ok(int type, u_int32_t seq, struct ssh *ssh)
+compare_hsh(u_char *hsh1, u_char* hsh2, size_t length)
 {
-	Authctxt *authctxt = (Authctxt *) ssh->authctxt;
-	Identity *id = NULL;
-    u_char *gr;
-    u_char **keys;
-    struct sshkey *privkeys[256];
-
-    u_char **intersection = NULL;
-
-    size_t privkeys_len = 0;
-    size_t keys_len;
-    int ret = 0;
-	int r;
-
-	if (authctxt == NULL)
-		fatal("input_userauth_pk_ok: no authentication context");
-
-    if ((r = sshpkt_get_string(ssh, &gr, NULL)) != 0 ||
-        (r = sshpkt_get_u64(ssh, &keys_len)) != 0)
-        fatal_fr(r, "g^r and i");
+    int aredif = 0;
+    for (size_t k = 0; k < 16; k++)
+        aredif |= hsh1[k] ^ hsh2[k];
+    return aredif;
+}
 
 
-    keys = (u_char**) malloc(sizeof(u_char*) * keys_len);
+static int
+psi_chal(int type, u_int32_t seq, struct ssh *ssh)
+{
+    debug("STARTING PSI CHAL");
+    struct stage2data *data = ssh_get_app_data(ssh);
+    ssh_set_app_data(ssh, NULL);
+    int ret = SSH_ERR_INTERNAL_ERROR;
+    u_char h_s[32];
+    u_char s[16] = {0};
+    int s_set = 0;
+    int sent = 0;
 
-    for (size_t i = 0; i < keys_len; i++)
-    {
-        if ((r = sshpkt_get_string(ssh, &keys[i], NULL)) != 0)
-            fatal_fr(r, "A_i^r");
+    u_char *s_hashes = NULL;
+    size_t s_hasheslen = 0;
+
+    ssh_dispatch_set(ssh, SSH2_MSG_USERAUTH_PSI_CHAL, NULL);
+
+    // Check first half of hash matches ours
+    // XOR second half of hashes to get s (hash s and check with h_s)
+    // if match send s
+    if ((ret = sshpkt_get(ssh, h_s, SHA256_DIGEST_LENGTH)) != 0  ||
+        (ret = sshpkt_get_string(ssh, &s_hashes, &s_hasheslen)) != 0 ||
+        (ret = sshpkt_get_end(ssh)) != 0)
+        goto out;
+
+    s_hasheslen /= SHA256_DIGEST_LENGTH;
+
+    for (size_t i = 0; i < s_hasheslen; i++) {
+        for (size_t j = 0; j < data->hashlength; j++) {
+            u_char xorbuf[16];
+            u_char hshbuf[32];
+            int aredif = compare_hsh(&s_hashes[i*32], data->hashes[j], 16);
+
+            for (size_t k = 16; k < 32; k++)
+                xorbuf[k-16] = s_hashes[i*32 + k] ^ data->hashes[j][k];
+
+            struct ssh_digest_ctx *hashctx = ssh_digest_start(SSH_DIGEST_SHA256);
+            ssh_digest_update(hashctx, xorbuf, 16);
+            ssh_digest_final(hashctx, hshbuf, SHA256_DIGEST_LENGTH);
+            aredif |= compare_hsh(hshbuf, h_s, SHA256_DIGEST_LENGTH);
+            u_char flag = ((unsigned int)aredif - 1) >> 8; // 0xff if aredif==0. 0 otherwise
+
+
+            for (size_t k = 0; k < 16; k++)
+                s[k] ^= (s[k] ^ xorbuf[k]) & flag;
+
+
+            s_set |= flag;
+        }
     }
 
-    if ((r = sshpkt_get_end(ssh)) != 0)
-        fatal_fr(r, "packet end");
+    logit("The server is using %lu keys", s_hasheslen);
 
-    // Now run PSI with the keys we just received
-	// 1. Convert received keys to ge25519
-	// 2. loop through authctxt->keys;
-	// 3. (g^r)^k_i =? A_i^r
-	// 4. If so, match found: (k_i i)
-	// 5. Send signature of sid with (k_i, A_i^r = (g^r)^k)
-    TAILQ_FOREACH(id, &authctxt->keys, next) {
-        if (id->key != NULL && id->key->type == KEY_ED25519) {
-		    if ((privkeys[privkeys_len] = load_identity_file(id)) != NULL) {
-                privkeys_len++;
+    // Empty intersection
+    if (s_set == 0) {
+        debug("Empty intersection. Exiting.");
+        sent = 0;
+        goto out;
+    }
+
+    if ((ret = sshpkt_start(ssh, SSH2_MSG_USERAUTH_PSI_PROOF)) != 0 ||
+        (ret = sshpkt_put(ssh, s, 16)) != 0 ||
+        (ret = sshpkt_send(ssh)) != 0 || ssh_packet_write_wait(ssh) != 0)
+        goto out;
+
+    sent = 1;
+
+out:
+    if (data)
+        freezero(data->hashes, data->hashlength * sizeof(*data->hashes));
+    free(data);
+    free(s_hashes);
+    if (ret == 0 && sent == 0)
+        debug("Didn't send");
+    return ret;
+}
+
+/*
+ * If not authfd (ssh-agent) can't authenticate
+ * Receive from server and parse into keytype bins
+ * For each key, ask agent to decrypt relevant KEM
+ * Interpolate polynomial with hash decryptions
+ * H(ssh-psi||session_id||fp_pk||kem_msg)
+ */
+
+/* ARGSUSED */
+static int
+input_userauth_psi_kem_dec(int type, u_int32_t seq, struct ssh *ssh)
+{
+    debug("STARTING PSI KEM DEC");
+	Authctxt *authctxt = (Authctxt *) ssh->authctxt;
+
+    struct kemc {
+        char *name;
+        u_char *c;
+        size_t clen;
+    };
+    struct stage2data {
+        u_char (*hashes)[SHA256_DIGEST_LENGTH];
+        size_t hashlength;
+    };
+
+    struct kemc *kems = NULL;
+    Identity *id = NULL;
+
+    int ret = 0;
+    int err = 0;
+
+    size_t validkeycount = 0;
+    size_t mollerbyteslen = 0;
+
+    u_char *mollerbits = NULL;
+    u_char (*points_y)[32] = NULL;
+    u_char (*exps)[32] = NULL;
+    u_char *poly = NULL;
+    struct stage2data *data = NULL;
+
+	ssh_dispatch_set(ssh, SSH2_MSG_USERAUTH_PSI_KEM, NULL);
+
+	if (authctxt == NULL)
+		fatal("input_userauth_psi_kem_dec: no authentication context");
+
+    if (authctxt->agent_fd == -1)
+		fatal("input_userauth_psi_kem_dec: no ssh-agent found");
+
+
+    size_t kem_count = 0;
+    if ((err = sshpkt_get_u64(ssh, &kem_count)) != 0)
+        goto out;
+
+    if ((kems = calloc(kem_count, sizeof(struct kemc))) == NULL) {
+        err = SSH_ERR_ALLOC_FAIL;
+        goto out;
+    }
+
+    for (size_t i = 0; i < kem_count; i++) {
+        if ((err = sshpkt_get_cstring(ssh, &kems[i].name, NULL)) != 0 ||
+            (err = sshpkt_get_string(ssh, &kems[i].c, &kems[i].clen)))
+            goto out;
+    }
+
+    u_char grwhole[32];
+    u_char grtwist[32];
+
+    if ((ret = sshpkt_get(ssh, grwhole, 32)) != 0 ||
+        (ret = sshpkt_get(ssh, grtwist, 32)) != 0 ||
+        (err = sshpkt_get_end(ssh)) != 0)
+        goto out;
+
+	TAILQ_FOREACH(id, &authctxt->keys, next) {
+        if (id->agent_fd == -1)
+            continue;
+
+        if (strcmp(sshkey_ssh_name(id->key), "ssh-unknown") == 0)
+            continue;
+
+        validkeycount++;
+    }
+
+
+    if ((data = malloc(sizeof(struct stage2data))) == NULL ||
+        (data->hashes = malloc(validkeycount * sizeof(*data->hashes))) == NULL) {
+        err = SSH_ERR_ALLOC_FAIL;
+        goto out;
+    }
+
+    size_t hashidx = 0;
+	TAILQ_FOREACH(id, &authctxt->keys, next) {
+        if (id->agent_fd == -1)
+            continue;
+
+        const char *keyname = sshkey_ssh_name(id->key);
+        if (strcmp(keyname, "ssh-unknown") == 0)
+            continue;
+
+        u_char *msg = NULL;
+        size_t mlen = 0;
+        for (size_t j = 0; j < kem_count; j++) {
+            if (strcmp(keyname, kems[j].name) == 0) {
+                if ((err = ssh_agent_multi_kem(id->agent_fd, id->key, kems[j].c, kems[j].clen, &msg, &mlen)) != 0 ||
+                    (err = sshkey_prepare_psi_input(ssh, id->key, msg, mlen, data->hashes[hashidx++])) != 0)
+                    goto out;
+                break;
             }
         }
     }
 
-    if (privkeys_len == 0) {
-        ret = SSH_ERR_KEY_NOT_FOUND;
+    mollerbyteslen = (validkeycount + 7)/8;
+
+    if ((mollerbits = malloc(mollerbyteslen * sizeof(u_char))) == NULL ||
+        (points_y = malloc(validkeycount * sizeof(*points_y))) == NULL ||
+        (exps = malloc(validkeycount * sizeof(*exps))) == NULL ||
+        (poly = malloc(validkeycount * 32)) == NULL) {
+        err = SSH_ERR_ALLOC_FAIL;
         goto out;
     }
 
-    ret = sshkey_psi(intersection, privkeys, privkeys_len, keys, keys_len, gr);
+	randombytes(mollerbits, mollerbyteslen);
 
+    rijndael256_round_keys round_keys;
+    for (size_t i = 0; i < validkeycount; i++) {
+	    randombytes(exps[i], 32);
+        u_char mask = exps[i][31] & 0x80;
+        exps[i][31] &= 0x7f;
+        const u_char *curve = (mollerbits[i/8] >> (i % 8)) & 1 ? CURVE_WHOLE : CURVE_TWIST;
+        crypto_scalarmult_curve25519_noclamp(points_y[i], exps[i], curve);
+        points_y[i][31] ^= mask;
+
+        rijndael256_set_key(&round_keys, data->hashes[i]);
+        rijndael256_enc_block(&round_keys, points_y[i], points_y[i]);
+    }
+
+    // Check no duplicate keys
+    // Check keys not empty
+    polynomial_interpolate(data->hashes, points_y, validkeycount, poly);
+
+    ssh_dispatch_set(ssh, SSH2_MSG_USERAUTH_PSI_CHAL, &psi_chal);
+    if ((err = sshpkt_start(ssh, SSH2_MSG_USERAUTH_PSI_INTERPOLATE)) != 0 ||
+        (err = sshpkt_put_string(ssh, poly, validkeycount * 32) != 0) ||
+        (err = sshpkt_send(ssh) != 0) ||
+        (err = ssh_packet_write_wait(ssh) != 0))
+        goto out;
+
+
+    // hash -> AES.enc(g^x or g'x) (curve, twist)
+    for (size_t i = 0; i < validkeycount; i++) {
+        u_char grexp[32];
+        const u_char *curve = (mollerbits[i/8] >> (i % 8)) & 1 ? grwhole : grtwist;
+        crypto_scalarmult_curve25519_noclamp(grexp, exps[i], curve);
+
+        struct ssh_digest_ctx *hashctx = ssh_digest_start(SSH_DIGEST_SHA256);
+        ssh_digest_update(hashctx, data->hashes[i], SHA256_DIGEST_LENGTH);
+        ssh_digest_update(hashctx, grexp, SHA256_DIGEST_LENGTH);
+        ssh_digest_final(hashctx, data->hashes[i], SHA256_DIGEST_LENGTH);
+
+    }
+
+    data->hashlength = validkeycount;
+    ssh_set_app_data(ssh, data);
+    data = NULL;
+    ret = 0;
 out:
-    for (size_t i = 0; i < keys_len; i++)
-    {
-		free(keys[i]);
-	}
+    for (size_t i = 0; i < kem_count; i++) {
+        free(kems[i].name);
+        free(kems[i].c);
+    }
+    free(kems);
 
-    free(keys);
+    if (data)
+        freezero(data->hashes, validkeycount * sizeof(*data->hashes));
 
-    for (size_t i = 0; i < privkeys_len; i++)
-    {
-		free(privkeys[i]);
-	}
+    free(data);
+    freezero(exps, validkeycount * sizeof(*exps));
+    freezero(points_y, validkeycount * sizeof(*points_y));
+    freezero(mollerbits, mollerbyteslen);
+    free(poly);
 	return ret;
 }
 
@@ -1999,16 +2209,16 @@ userauth_psi(struct ssh *ssh)
 {
 	Authctxt *authctxt = (Authctxt *)ssh->authctxt;
     int r;
+    debug("STARTING PSI AUTH");
 
     // Request ring authentication
+	ssh_dispatch_set(ssh, SSH2_MSG_USERAUTH_PSI_KEM, &input_userauth_psi_kem_dec);
 	if ((r = sshpkt_start(ssh, SSH2_MSG_USERAUTH_REQUEST)) != 0 ||
 	    (r = sshpkt_put_cstring(ssh, authctxt->server_user)) != 0 ||
 	    (r = sshpkt_put_cstring(ssh, authctxt->service)) != 0 ||
-	    (r = sshpkt_put_cstring(ssh, authctxt->method->name)) != 0 ||
+	    (r = sshpkt_put_cstring(ssh, "psi")) != 0 ||
 	    (r = sshpkt_send(ssh)) != 0)
 		fatal_fr(r, "send packet");
-
-	ssh_dispatch_set(ssh, SSH2_MSG_USERAUTH_PSI_KEM, &input_userauth_ring_ok);
 
     // sent
 	return (1);

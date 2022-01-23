@@ -399,6 +399,46 @@ agent_encode_alg(const struct sshkey *key, const char *alg)
 	return 0;
 }
 
+int
+ssh_agent_multi_kem(int sock, const struct sshkey *key,
+    const u_char *challenge, size_t challengelen,
+    u_char **kem, size_t *klen)
+{
+	u_char type = 0;
+	u_int flags = 0;
+	struct sshbuf *msg = NULL;
+    int r = SSH_ERR_INTERNAL_ERROR;
+
+	if ((msg = sshbuf_new()) == NULL)
+		return SSH_ERR_ALLOC_FAIL;
+
+    if ((r = sshbuf_put_u8(msg, SSH2_AGENTC_MULTI_KEM_DEC_REQUEST)) != 0 ||
+        (r = sshkey_puts(key, msg) != 0) ||
+        (r = sshbuf_put_string(msg, challenge, challengelen)) != 0||
+        (r = sshbuf_put_u32(msg, flags)) != 0)
+        goto out;
+
+    if ((r = ssh_request_reply(sock, msg, msg)) != 0)
+        goto out;
+
+    if ((r = sshbuf_get_u8(msg, &type)) != 0)
+        goto out;
+
+    if (agent_failed(type)) {
+        r = SSH_ERR_AGENT_FAILURE;
+        goto out;
+    } else if (type != SSH2_AGENT_KEM_RESPONSE) {
+        r = SSH_ERR_INVALID_FORMAT;
+        goto out;
+	}
+    if ((r = sshbuf_get_string(msg, kem, klen)) != 0)
+        goto out;
+
+out:
+    sshbuf_free(msg);
+    return r;
+}
+
 /* ask agent to sign data, returns err.h code on error, 0 on success */
 int
 ssh_agent_sign(int sock, const struct sshkey *key,

@@ -44,6 +44,7 @@
 #include "rijndael256.h"
 #include "smult_curve25519_ref.h"
 #include "ssh_api.h"
+#include "sshbuf.h"
 #include "xmalloc.h"
 #include "hostfile.h"
 #include "sshkey.h"
@@ -67,12 +68,13 @@ struct psi_in {
     u_char (*hashes)[SHA256_DIGEST_LENGTH];
     size_t hashcount;
 };
+struct stage1data {
+    struct psi_in psi_inputs;
+    u_char r[32];
+};
 
 /* import */
 extern ServerOptions options;
-
-/* "none" is allowed only one time */
-static int none_enabled = 1;
 
 int psi_eval_poly(int type, u_int32_t seq, struct ssh *ssh);
 int psi_verify_proof(int type, u_int32_t seq, struct ssh *ssh);
@@ -80,7 +82,7 @@ int psi_verify_proof(int type, u_int32_t seq, struct ssh *ssh);
 static int
 get_key_from_line(struct ssh *ssh, struct passwd *pw, char* cp, const char *loc, struct sshkey **keys)
 {
-	int want_keytype = KEY_ED25519;
+	int want_keytype = KEY_UNSPEC;
 	const char *reason = NULL;
 	struct sshkey *found = NULL;
 	if ((found = sshkey_new(want_keytype)) == NULL) {
@@ -164,61 +166,6 @@ get_all_authorized_keys2(struct ssh *ssh, struct passwd *pw, char *file, struct 
 	return foundcount;
 }
 
-static int
-run_protocol(struct ssh *ssh, struct sshkey **keys, size_t keyslen)
-{
-	Authctxt *authctxt = (Authctxt *) ssh->authctxt;
-	char tmp[32];
-	ge25519 gegr;
-	ge25519 gega;
-	sc25519 scr;
-	int err;
-
-	// XXX 256 limit to authorized_keys can overflow; set a limit
-	ge25519 geai[256];
-
-	// Generate random r
-	randombytes(tmp, 32);
-	sc25519_from32bytes(&scr, tmp);
-
-	// Get g^r
-	ge25519_scalarmult_base(&gegr, &scr); // g^r
-
-	// Find A_i^r for all A_i
-	for (size_t i = 0; i < keyslen; i++)
-	{
-		// TODO use Lance's constant time impl instead
-		ge25519_unpackneg_vartime(&gega, keys[i]->ed25519_pk);
-
-		// Compute A_i^r in constant time
-		ge25519_scalarmult(&geai[i], &gega, &scr);
-	}
-
-	// Send over g^r, [A_i^r] to the client
-	if ((err = sshpkt_start(ssh, SSH2_MSG_USERAUTH_PSI_KEM)) != 0)
-		fatal_fr(err, "starting packet");
-
-	ge25519_pack(tmp, &gegr);
-	if ((err = sshpkt_put_string(ssh, tmp, 32)) != 0)
-		fatal_fr(err, "g^r");
-
-	if ((err = sshpkt_put_u64(ssh, keyslen)) != 0)
-		fatal_fr(err, "i");
-
-	for (size_t i = 0; i < keyslen; i++)
-	{
-		ge25519_pack(tmp, &geai[i]);
-		if ((err = sshpkt_put_string(ssh, tmp, 32)) != 0)
-			fatal_fr(err, "A_i^r");
-	}
-
-	if ((err = sshpkt_send(ssh)) != 0 ||
-			(err = ssh_packet_write_wait(ssh)) != 0)
-		fatal_fr(err, "send packet");
-
-
-	return 0;
-}
 
 static int
 get_all_authorized_keys(struct ssh *ssh, struct passwd *pw)
@@ -240,45 +187,20 @@ get_all_authorized_keys(struct ssh *ssh, struct passwd *pw)
 		debug("Authorized keys found %lu", keyslen);
 		free(file);
 	}
-    // Need to support other keys too!!
-    // We can check keys[i]->type
-    // If ecdsa, call OpenSSL get0group function
 
-    // Basically just need set of unique key types
-    // Run c_ec Kem.enc() on all of them to generate 'g^r'
-    // Run c_rsa = Kem.enc(pk) for all rsa pks
-    // create okvs pk -> c_rsa
-    // serlialize and send to client
-    // dispatch some other routine
-    // Run Kem.msg() to get all the ec kem messages (free for RSA)
-    // Forget the r's asap
-    // Only realliy need to store KEM decryptions (list of struct ssh)
+    struct stage1data* data;
 
-
-    // Note before evaluations send to client shuffle keys (or hashes)
-    // DO PSI (send KEM decyptions as input)
-    // Receive OKVS from client
-    // Find xs by evaluating at every (pk, m)
-    // sample r' (C25519)
-    // Find H(pk, m, x^r') for every x
-    // Send first half of hash to client
-    // Sample secret s
-    // Xor second half with s and send to client
-    // Send H(s), g^r', g'^r' (Moller trick): g = 6, g' = 3 (LE)
-    // Receive s. Check correctness and allow auth
-
-    //u_char (*psi_inputs)[SHA256_DIGEST_LENGTH];
-    struct psi_in *psi_inputs;
-
-	if ((psi_inputs = malloc(sizeof(struct psi_in))) == NULL ||
-        (psi_inputs->hashes = malloc(sizeof(*psi_inputs->hashes) * keyslen)) != NULL)
+	if ((data = malloc(sizeof(struct stage1data))) == NULL ||
+        (data->psi_inputs.hashes = malloc(sizeof(*data->psi_inputs.hashes) * keyslen)) == NULL)
     {
 		fatal_fr(SSH_ERR_ALLOC_FAIL, "allocating x/y coords");
 	}
 
-    success = sshkey_create_kem_enc(ssh, (const struct sshkey**)keys, keyslen, psi_inputs->hashes);
-    ssh_set_app_data(ssh, psi_inputs);
 	ssh_dispatch_set(ssh, SSH2_MSG_USERAUTH_PSI_INTERPOLATE, &psi_eval_poly);
+    success = sshkey_create_kem_enc(ssh, (const struct sshkey**)keys, keyslen, data->psi_inputs.hashes, data->r);
+
+    data->psi_inputs.hashcount = keyslen;
+    ssh_set_app_data(ssh, data);
 
 	authctxt->postponed = 1;
 
@@ -299,13 +221,13 @@ get_all_authorized_keys(struct ssh *ssh, struct passwd *pw)
 int
 psi_eval_poly(int type, u_int32_t seq, struct ssh *ssh)
 {
+    debug("Evaluating polynomial");
 	Authctxt *authctxt = ssh->authctxt;
 
     int ret = SSH_ERR_INTERNAL_ERROR;
 
-    u_char r[32];
-    u_char *s = NULL; // xor second half of hashes
-    u_char h_s[32]; // to the client
+    u_char *s = NULL; // The secret client has to get
+    u_char h_s[32]; // Hash of the secret
 
     ssh_dispatch_set(ssh, SSH2_MSG_USERAUTH_PSI_INTERPOLATE, NULL);
 
@@ -313,7 +235,8 @@ psi_eval_poly(int type, u_int32_t seq, struct ssh *ssh)
     size_t poly_size = 0;
     u_char (*ys)[SHA256_DIGEST_LENGTH] = NULL;
 
-    struct psi_in *psi_inputs = ssh_get_app_data(ssh);
+    struct stage1data *data = ssh_get_app_data(ssh);
+    struct psi_in *psi_inputs = &data->psi_inputs;
     ssh_set_app_data(ssh, NULL);
 
     if ((ret = sshpkt_get_string(ssh, &poly, &poly_size)) != 0 ||
@@ -322,6 +245,7 @@ psi_eval_poly(int type, u_int32_t seq, struct ssh *ssh)
 
     const int too_small = 32;
     if (poly_size < too_small) {
+        debug("Polynomial too small");
         ret = 0;
         goto fail;
     }
@@ -332,17 +256,13 @@ psi_eval_poly(int type, u_int32_t seq, struct ssh *ssh)
         goto fail;
     }
 
+    debug("Evaluating polynomial call %zu %lu", psi_inputs->hashcount, poly_size/32);
     polynomial_evaluate(psi_inputs->hashes, ys, psi_inputs->hashcount, poly, poly_size/32);
-
-    // Miniclamp (TM)
-	randombytes(r, 32);
-    r[31] &= 0x7f;
 
 	randombytes(s, 16);
     struct ssh_digest_ctx *hashctx = ssh_digest_start(SSH_DIGEST_SHA256);
-    ssh_digest_update(hashctx, s, SHA256_DIGEST_LENGTH);
+    ssh_digest_update(hashctx, s, 16);
     ssh_digest_final(hashctx, h_s, SHA256_DIGEST_LENGTH);
-
 
     u_char plaintext[32];
     u_char pr[32];
@@ -352,7 +272,10 @@ psi_eval_poly(int type, u_int32_t seq, struct ssh *ssh)
         rijndael256_set_key(&round_keys, psi_inputs->hashes[i]);
         rijndael256_set_key_dec(&dec_round_keys, &round_keys);
         rijndael256_dec_block(&dec_round_keys, ys[i], plaintext);
-        crypto_scalarmult_curve25519_noclamp(pr, r, plaintext);
+        plaintext[31] &= 0x7f;
+
+
+        crypto_scalarmult_curve25519_noclamp(pr, data->r, plaintext);
 
         //H(x||pr)
         struct ssh_digest_ctx *hashctx = ssh_digest_start(SSH_DIGEST_SHA256);
@@ -360,28 +283,20 @@ psi_eval_poly(int type, u_int32_t seq, struct ssh *ssh)
         ssh_digest_update(hashctx, pr, SHA256_DIGEST_LENGTH);
         ssh_digest_final(hashctx, psi_inputs->hashes[i], SHA256_DIGEST_LENGTH);
 
+
         for (int j=0; j<16; j++)
             psi_inputs->hashes[i][j+16] ^= s[j];
     }
-    u_char grwhole[32];
-    u_char grtwist[32];
-
-    crypto_scalarmult_curve25519_noclamp(grwhole, r, CURVE_WHOLE);
-    crypto_scalarmult_curve25519_noclamp(grtwist, r, CURVE_TWIST);
-
     // XXX sort psi_inputs->hashes
 
     // h_s, grw, grt, hashes
+    ssh_dispatch_set(ssh, SSH2_MSG_USERAUTH_PSI_PROOF, &psi_verify_proof);
     if ((ret = sshpkt_start(ssh, SSH2_MSG_USERAUTH_PSI_CHAL)) != 0 ||
         (ret = sshpkt_put(ssh, h_s, SHA256_DIGEST_LENGTH)) != 0  ||
-        (ret = sshpkt_put(ssh, grwhole, 32)) != 0 ||
-        (ret = sshpkt_put(ssh, grtwist, 32)) != 0 ||
-        (ret = sshpkt_put(ssh, h_s, SHA256_DIGEST_LENGTH)) != 0 ||
-        (ret = sshpkt_put_string(ssh, psi_inputs->hashes, psi_inputs->hashcount*SHA256_DIGEST_LENGTH)) != 0)
+        (ret = sshpkt_put_string(ssh, psi_inputs->hashes, psi_inputs->hashcount*SHA256_DIGEST_LENGTH)) != 0 ||
+        (ret = sshpkt_send(ssh)) != 0 || ssh_packet_write_wait(ssh))
         goto fail;
 
-
-    ssh_dispatch_set(ssh, SSH2_MSG_USERAUTH_PSI_CHAL, &psi_verify_proof);
     authctxt->postponed = 1;
 
     ssh_set_app_data(ssh, s);
@@ -392,11 +307,9 @@ psi_eval_poly(int type, u_int32_t seq, struct ssh *ssh)
 fail:
     freezero(s, 16);
     authctxt->postponed = 0;
-    // XXX arguments??
     userauth_finish(ssh, 0, "ring", NULL);
 
 out:
-    memset(r, 0, 32);
     free(psi_inputs->hashes);
     free(psi_inputs);
     free(ys);
@@ -408,13 +321,14 @@ out:
 int
 psi_verify_proof(int type, u_int32_t seq, struct ssh *ssh)
 {
+    debug("Starting PSI PROOF");
 	Authctxt *authctxt = ssh->authctxt;
     int ret = SSH_ERR_INTERNAL_ERROR;
     int authenticated = 0;
 
     ssh_dispatch_set(ssh, SSH2_MSG_USERAUTH_PSI_CHAL, NULL);
     u_char *s = ssh_get_app_data(ssh);
-    u_char *sclient = NULL;
+    u_char sclient[16];
     ssh_set_app_data(ssh, NULL);
 
     if ((ret = sshpkt_get(ssh, sclient, 16)) != 0 ||
@@ -427,26 +341,25 @@ psi_verify_proof(int type, u_int32_t seq, struct ssh *ssh)
     ret = 0;
 out:
 	authctxt->postponed = 0;
-    userauth_finish(ssh, authenticated, "ring", NULL);
+    userauth_finish(ssh, authenticated, "psi", NULL);
     free(s);
-    free(sclient);
 
     return ret;
 }
 
 static int
-userauth_ring(struct ssh *ssh, const char *method)
+userauth_psi(struct ssh *ssh, const char *method)
 {
-	debug("RING RING");
+	debug("PSI AUTH");
 	Authctxt *authctxt = ssh->authctxt;
 	struct passwd *pw = authctxt->pw;
 	return get_all_authorized_keys(ssh, pw) == 1;
 }
 
 
-Authmethod method_ring = {
-	"ring",
+Authmethod method_psi = {
 	"psi",
-	userauth_ring,
-	&none_enabled
+	"private-psi",
+	userauth_psi,
+    &options.psi_authentication
 };

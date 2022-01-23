@@ -169,6 +169,9 @@ void store_poly(const ZZ_pX& poly, u_char *bytesArr, size_t numOfElements, size_
 
 void polynomial_interpolate(const u_char (*points_x)[32], const u_char (*points_y)[32], size_t num_points, u_char* poly)
 {
+	if (num_points == 0)
+		return;
+
 	ZZ_p::init(mPrime256);
 
 	Vec<ZZ_p> points_x_ZZp = load_points(points_x, num_points);
@@ -181,6 +184,9 @@ void polynomial_interpolate(const u_char (*points_x)[32], const u_char (*points_
 
 void polynomial_evaluate(const u_char (*points_x)[32], u_char (*points_y)[32], size_t num_points, const u_char* poly, size_t poly_coeffs)
 {
+	if (num_points == 0)
+		return;
+
 	ZZ_p::init(mPrime256);
 
 	Vec<ZZ_p> points_x_ZZp = load_points(points_x, num_points);

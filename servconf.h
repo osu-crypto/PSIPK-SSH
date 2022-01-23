@@ -126,6 +126,7 @@ typedef struct {
 	char   *hostbased_accepted_algos; /* Algos allowed for hostbased */
 	char   *hostkeyalgorithms;	/* SSH2 server key types */
 	char   *ca_sign_algorithms;	/* Allowed CA signature algorithms */
+	int     psi_authentication;	/* If true, permit ssh2 psi authentication. */
 	int     pubkey_authentication;	/* If true, permit ssh2 pubkey authentication. */
 	char   *pubkey_accepted_algos;	/* Signature algos allowed for pubkey */
 	int	pubkey_auth_options;	/* -1 or mask of PUBKEYAUTH_* flags */

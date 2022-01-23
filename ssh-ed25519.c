@@ -17,6 +17,7 @@
 
 #include "includes.h"
 
+#include <stdlib.h>
 #include <sys/types.h>
 #include <limits.h>
 
@@ -202,18 +203,24 @@ int
 ssh_ed25519_kem_enc(u_char **c, size_t *clen, void **r)
 {
     const int len = 32;
-	if ((*r = malloc(len)) == NULL) {
+	if ((*c = malloc(len)) == NULL) {
         return SSH_ERR_ALLOC_FAIL;
 	}
 
-	if ((*c = malloc(len)) == NULL) {
-        free(*r);
+	if ((*r = malloc(2 * len)) == NULL) {
+        free(*c);
+        return SSH_ERR_ALLOC_FAIL;
+	}
+
+    crypto_sign_ed25519_keypair(*c, *r);
+
+	if ((*r = realloc(*r, len)) == NULL) {
+        free(*c);
         return SSH_ERR_ALLOC_FAIL;
 	}
 
     *clen = len;
 
-    crypto_sign_ed25519_keypair(*c, *r);
     return 0;
 }
 
@@ -227,7 +234,8 @@ ssh_ed25519_kem_msg(const struct sshkey *key, u_char **m, size_t *mlen, const u_
 
 	if (key == NULL ||
 	    sshkey_type_plain(key->type) != KEY_ED25519 ||
-	    key->ed25519_pk == NULL) // || grlen != gelen) return SSH_ERR_INVALID_ARGUMENT;
+	    key->ed25519_pk == NULL)
+        return SSH_ERR_INVALID_ARGUMENT;
 
 	if ((temp_m = malloc(len)) == NULL) {
 		ret = SSH_ERR_ALLOC_FAIL;

@@ -757,7 +757,6 @@ process_multi_kem_dec_request(SocketEntry *e)
         goto send;
     }
 
-    // NOT SIGN()
     if ((r = sshkey_kem_dec(id->key, &kem, &klen, challenge, challengelen)) != 0) {
         error_fr(r, "sshkey_kem_dec");
     } else {
@@ -769,7 +768,7 @@ process_multi_kem_dec_request(SocketEntry *e)
 	sshkey_free(key);
 	free(fp);
 	if (ok == 0) {
-		if ((r = sshbuf_put_u8(msg, SSH2_AGENT_SIGN_RESPONSE)) != 0 ||
+		if ((r = sshbuf_put_u8(msg, SSH2_AGENT_KEM_RESPONSE)) != 0 ||
 		    (r = sshbuf_put_string(msg, kem, klen)) != 0)
 			fatal_fr(r, "compose");
 	} else if ((r = sshbuf_put_u8(msg, SSH_AGENT_FAILURE)) != 0)

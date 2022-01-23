@@ -25,6 +25,7 @@
  */
 
 #include "includes.h"
+#include "log.h"
 
 #if defined(WITH_OPENSSL) && defined(OPENSSL_HAS_ECC)
 
@@ -273,6 +274,7 @@ ssh_ecdsa_kem_enc(const int nid, u_char **c, size_t *clen, void **r)
 
     const EC_GROUP *group;
 
+
 	if ((ctx = BN_CTX_new()) == NULL)
 		return SSH_ERR_ALLOC_FAIL;
 
@@ -282,7 +284,6 @@ ssh_ecdsa_kem_enc(const int nid, u_char **c, size_t *clen, void **r)
     }
 
     group = EC_KEY_get0_group(gr);
-
     EC_KEY_generate_key(gr);
     pk = EC_KEY_get0_public_key(gr);
 
@@ -306,6 +307,7 @@ ssh_ecdsa_kem_enc(const int nid, u_char **c, size_t *clen, void **r)
     ret = 0;
 
 out:
+    debug("outout");
     freezero(buf, bufsize);
     EC_KEY_free(gr);
 	BN_CTX_free(ctx);

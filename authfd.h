@@ -63,6 +63,10 @@ int	ssh_agent_sign(int sock, const struct sshkey *key,
 	    u_char **sigp, size_t *lenp,
 	    const u_char *data, size_t datalen, const char *alg, u_int compat);
 
+int ssh_agent_multi_kem(int sock, const struct sshkey *key,
+    const u_char *challenge, size_t challengelen,
+    u_char **kem, size_t *klen);
+
 int	ssh_agent_bind_hostkey(int sock, const struct sshkey *key,
     const struct sshbuf *session_id, const struct sshbuf *signature,
     int forwarding);
@@ -83,6 +87,7 @@ int	ssh_agent_bind_hostkey(int sock, const struct sshkey *key,
 #define SSH2_AGENT_IDENTITIES_ANSWER		12
 #define SSH2_AGENTC_SIGN_REQUEST		13
 #define SSH2_AGENT_SIGN_RESPONSE		14
+#define SSH2_AGENT_KEM_RESPONSE			15
 #define SSH2_AGENTC_ADD_IDENTITY		17
 #define SSH2_AGENTC_REMOVE_IDENTITY		18
 #define SSH2_AGENTC_REMOVE_ALL_IDENTITIES	19

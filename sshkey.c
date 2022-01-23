@@ -27,7 +27,9 @@
 
 #include "includes.h"
 #include "kex.h"
+#include "log.h"
 #include "openbsd-compat/openbsd-compat.h"
+#include "smult_curve25519_ref.h"
 
 #include <openssl/ec.h>
 #include <sys/types.h>
@@ -96,6 +98,8 @@ int	sshkey_private_serialize_opt(struct sshkey *key,
     struct sshbuf *buf, enum sshkey_serialize_rep);
 static int sshkey_from_blob_internal(struct sshbuf *buf,
     struct sshkey **keyp, int allow_cert);
+static size_t
+sshkey_ssh_idx_from_name(const char* name);
 
 /* Supported key types */
 struct keytype {
@@ -171,11 +175,17 @@ static const struct keytype keytypes[] = {
 
 #define NUM_KEYTYPES (sizeof(keytypes)/sizeof(keytypes[0]) - 1)
 
+struct kembucket {
+    void *r;
+    u_char *c;
+    size_t clen;
+};
 
 // 'ssh-psi'||session_id||pk_digest||m for each zip(m, pk)
-static int
+int
 sshkey_prepare_psi_input(struct ssh *ssh, const struct sshkey *key, const u_char *msg, size_t msglen, u_char digest[SHA256_DIGEST_LENGTH])
 {
+    debug("Preparing PSI Input");
     int ret = SSH_ERR_INTERNAL_ERROR;
 	struct ssh_digest_ctx *hashctx = NULL;
 	struct sshbuf *b = NULL;
@@ -202,10 +212,59 @@ sshkey_prepare_psi_input(struct ssh *ssh, const struct sshkey *key, const u_char
     }
 
   out:
+    debug("ret PSI Input");
     freezero(keyhash, keyhashlen);
 	ssh_digest_free(hashctx);
     sshbuf_free(b);
     return ret;
+}
+
+int
+sshkey_create_kem_dec(struct ssh *ssh, u_char (*hashes)[SHA256_DIGEST_LENGTH])
+{
+    int err = SSH_ERR_INTERNAL_ERROR;
+    struct kembucket buckets[NUM_KEYTYPES] = {0};
+    size_t kem_count = 0;
+
+    char *keyname = NULL;
+    size_t keynamelen;
+
+    if ((err = sshpkt_get_u64(ssh, &kem_count)) != 0)
+        goto out;
+
+    for (size_t i =0; i < kem_count; i++) {
+        if ((err = sshpkt_get_cstring (ssh, &keyname, &keynamelen)) != 0)
+            goto out;
+
+        size_t bidx = sshkey_ssh_idx_from_name(keyname);
+
+        // Should be unique KEM keytypes
+        if (buckets[bidx].c != NULL) {
+            err = SSH_ERR_INVALID_FORMAT;
+            goto out;
+        }
+
+        if ((err = sshpkt_get_string(ssh, &buckets[bidx].c, &buckets[bidx].clen)) != 0)
+            goto out;
+
+            //)
+
+        free(keyname);
+        keyname = NULL;
+    }
+
+
+    // Expect end of message
+    if ((err = sshpkt_get_end(ssh)) != 0)
+        goto out;
+
+
+    // Loop through keys
+
+
+out:
+    free(keyname);
+    return err;
 }
 
 // (Order matters for latency)
@@ -213,18 +272,13 @@ sshkey_prepare_psi_input(struct ssh *ssh, const struct sshkey *key, const u_char
 // Send them!
 // EC.msg() for all rs and cs (free for RSA but we ignore that)
 int
-sshkey_create_kem_enc(struct ssh *ssh, const struct sshkey **keys, size_t keyslen, u_char (*hashes)[SHA256_DIGEST_LENGTH])
+sshkey_create_kem_enc(struct ssh *ssh, const struct sshkey **keys, size_t keyslen, u_char (*hashes)[SHA256_DIGEST_LENGTH], u_char r[32])
 {
-    struct bucket {
-        void *r;
-        u_char *c;
-        size_t clen;
-    };
+    debug("KEM ENC");
 
-    int err;
+    int err = SSH_ERR_INTERNAL_ERROR;
     size_t unique_keytypes = 0;
-    struct bucket buckets[NUM_KEYTYPES] = {0};
-
+    struct kembucket buckets[NUM_KEYTYPES] = {0};
 
 	if ((err = sshpkt_start(ssh, SSH2_MSG_USERAUTH_PSI_KEM)) != 0)
         return err;
@@ -239,7 +293,10 @@ sshkey_create_kem_enc(struct ssh *ssh, const struct sshkey **keys, size_t keysle
                 # ifdef OPENSSL_HAS_ECC
                     case KEY_ECDSA_CERT:
                     case KEY_ECDSA:
-                        ssh_ecdsa_kem_enc(keys[i]->ecdsa_nid, &buckets[j].c, &buckets[j].clen, &buckets[j].r);
+                        if ((err = ssh_ecdsa_kem_enc(keys[i]->ecdsa_nid, &buckets[j].c, &buckets[j].clen, &buckets[j].r)) != 0)
+                            goto out;
+
+
                         unique_keytypes++;
                         break;
                 # endif /* OPENSSL_HAS_ECC */
@@ -250,7 +307,8 @@ sshkey_create_kem_enc(struct ssh *ssh, const struct sshkey **keys, size_t keysle
                     case KEY_ED25519:
                     case KEY_ED25519_CERT:
                         // XXX rlen stuff?
-                        ssh_ed25519_kem_enc(&buckets[j].c, &buckets[j].clen, &buckets[j].r);
+                        if ((err = ssh_ed25519_kem_enc(&buckets[j].c, &buckets[j].clen, &buckets[j].r)) != 0)
+                            goto out;
                         unique_keytypes++;
                         break;
                     default:
@@ -259,6 +317,7 @@ sshkey_create_kem_enc(struct ssh *ssh, const struct sshkey **keys, size_t keysle
         }
     }
 
+    debug("Keys KEM'd %lu", unique_keytypes);
     // Serialize and send ASAP
     if ((err = sshpkt_put_u64(ssh, unique_keytypes)) != 0)
         return err;
@@ -274,14 +333,30 @@ sshkey_create_kem_enc(struct ssh *ssh, const struct sshkey **keys, size_t keysle
             return err;
     }
 
-	if ((err = sshpkt_send(ssh)) != 0)
-		return err;
+    // Miniclamp (TM)
+    randombytes(r, 32);
+    r[31] &= 0x7f;
+
+    u_char grwhole[32];
+    u_char grtwist[32];
+
+    crypto_scalarmult_curve25519_noclamp(grwhole, r, CURVE_WHOLE);
+    crypto_scalarmult_curve25519_noclamp(grtwist, r, CURVE_TWIST);
+
+    if ((err = sshpkt_put(ssh, grwhole, 32)) != 0 ||
+        (err = sshpkt_put(ssh, grtwist, 32)) != 0)
+        return err;
+
+    if ((err = sshpkt_send(ssh)) != 0 || ssh_packet_write_wait(ssh))
+        return err;
+    debug("Server: sent psi kems");
 
     // Loop through the keys calling msg
     for (size_t i=0; i < keyslen; i++) {
         size_t j = sshkey_ssh_idx(keys[i]);
         if (keytypes[j].type != -1 && buckets[j].c != NULL)
         {
+            debug("Server: this is a key %s", keytypes[j].name);
             u_char *msg;
             size_t mlen;
             switch(keytypes[j].type) {
@@ -289,8 +364,12 @@ sshkey_create_kem_enc(struct ssh *ssh, const struct sshkey **keys, size_t keysle
                 # ifdef OPENSSL_HAS_ECC
                     case KEY_ECDSA_CERT:
                     case KEY_ECDSA:
-                        ssh_ecdsa_kem_msg(keys[i], &msg, &mlen, buckets[j].r);
-                        sshkey_prepare_psi_input(ssh, keys[i], msg, mlen, hashes[i]);
+                        debug("ECDSA");
+                        if ((err = ssh_ecdsa_kem_msg(keys[i], &msg, &mlen, buckets[j].r)) != 0 ||
+                            (err = sshkey_prepare_psi_input(ssh, keys[i], msg, mlen, hashes[i])) != 0) {
+                            debug("ECDSA exploded lol");
+                            goto out;
+                        }
                         break;
                 # endif /* OPENSSL_HAS_ECC */
                     case KEY_RSA_CERT:
@@ -299,8 +378,10 @@ sshkey_create_kem_enc(struct ssh *ssh, const struct sshkey **keys, size_t keysle
                 #endif /* WITH_OPENSSL */
                     case KEY_ED25519:
                     case KEY_ED25519_CERT:
-                        ssh_ed25519_kem_msg(keys[i], &msg, &mlen, buckets[j].r);
-                        sshkey_prepare_psi_input(ssh, keys[i], msg, mlen, hashes[i]);
+                        if ((err = ssh_ed25519_kem_msg(keys[i], &msg, &mlen, buckets[j].r)) != 0 ||
+                            (err = sshkey_prepare_psi_input(ssh, keys[i], msg, mlen, hashes[i])) != 0) {
+                                goto out;
+                        }
                         break;
                     default:
                         break;
@@ -308,6 +389,7 @@ sshkey_create_kem_enc(struct ssh *ssh, const struct sshkey **keys, size_t keysle
         }
     }
 
+out:
     for (size_t i=0; i < NUM_KEYTYPES; i++) {
         if (buckets[i].c == NULL)
             continue;
@@ -368,6 +450,19 @@ sshkey_ssh_idx_from_type_nid(int type, int nid)
 	for (size_t i=0; i < NUM_KEYTYPES; i++) {
         kt = &keytypes[i];
 		if (kt->type == type && (kt->nid == 0 || kt->nid == nid))
+			return i;
+	}
+	return NUM_KEYTYPES;
+}
+
+static size_t
+sshkey_ssh_idx_from_name(const char* name)
+{
+	const struct keytype *kt;
+
+	for (size_t i=0; i < NUM_KEYTYPES; i++) {
+        kt = &keytypes[i];
+        if (strcmp(name, kt->name) == 0)
 			return i;
 	}
 	return NUM_KEYTYPES;

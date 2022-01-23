@@ -73,7 +73,7 @@ extern Authmethod method_hostbased;
 #ifdef GSSAPI
 extern Authmethod method_gssapi;
 #endif
-extern Authmethod method_ring;
+extern Authmethod method_psi;
 
 Authmethod *authmethods[] = {
 	&method_none,
@@ -84,7 +84,7 @@ Authmethod *authmethods[] = {
 	&method_passwd,
 	&method_kbdint,
 	&method_hostbased,
-	&method_ring,
+	&method_psi,
 	NULL
 };
 
