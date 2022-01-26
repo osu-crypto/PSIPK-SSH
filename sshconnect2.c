@@ -955,7 +955,7 @@ input_userauth_psi_kem_dec(int type, u_int32_t seq, struct ssh *ssh)
             if ((ret = ssh_agent_multi_kem(id->agent_fd, id->key, rsa_y[polyidx], rsaclen, &msg, &mlen)) != 0 ||
                 (ret = sshkey_prepare_psi_input(ssh, id->key, msg, mlen, data->hashes[hashidx++], NULL)) != 0)
                 goto out;
-            polyidx += (rsaclen + 31) / 32;
+            polyidx += rsaclen / 32;
             freezero(msg, mlen);
             msg = NULL;
             continue;
@@ -965,15 +965,17 @@ input_userauth_psi_kem_dec(int type, u_int32_t seq, struct ssh *ssh)
         if (strcmp(keyname, "ssh-unknown") == 0)
             continue;
 
+        msg = NULL;
+        mlen = 0;
         for (size_t j = 0; j < kem_count; j++) {
             if (strcmp(keyname, kems[j].name) == 0) {
-                if ((ret = ssh_agent_multi_kem(id->agent_fd, id->key, kems[j].c, kems[j].clen, &msg, &mlen)) != 0 ||
-                    (ret = sshkey_prepare_psi_input(ssh, id->key, msg, mlen, data->hashes[hashidx++], NULL)) != 0)
+                if ((ret = ssh_agent_multi_kem(id->agent_fd, id->key, kems[j].c, kems[j].clen, &msg, &mlen)) != 0)
                     goto out;
-
                 break;
             }
         }
+        if ((ret = sshkey_prepare_psi_input(ssh, id->key, msg, mlen, data->hashes[hashidx++], NULL)) != 0)
+            goto out;
         freezero(msg, mlen);
         msg = NULL;
     }

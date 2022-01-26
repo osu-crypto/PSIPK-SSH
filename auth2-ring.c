@@ -196,10 +196,12 @@ get_all_authorized_keys(struct ssh *ssh, struct passwd *pw)
 		fatal_fr(SSH_ERR_ALLOC_FAIL, "allocating x/y coords");
 	}
 
-	ssh_dispatch_set(ssh, SSH2_MSG_USERAUTH_PSI_INTERPOLATE, &psi_eval_poly);
-    success = sshkey_create_kem_enc(ssh, (const struct sshkey**)keys, keyslen, data->psi_inputs.hashes, data->r);
+    size_t hashlen = keyslen;
 
-    data->psi_inputs.hashcount = keyslen;
+	ssh_dispatch_set(ssh, SSH2_MSG_USERAUTH_PSI_INTERPOLATE, &psi_eval_poly);
+    success = sshkey_create_kem_enc(ssh, (const struct sshkey**)keys, &hashlen, data->psi_inputs.hashes, data->r);
+
+    data->psi_inputs.hashcount = hashlen;
     ssh_set_app_data(ssh, data);
 
 	authctxt->postponed = 1;

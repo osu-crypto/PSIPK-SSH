@@ -255,7 +255,7 @@ int	 sshkey_get_sigtype(const u_char *, size_t, char **);
 /* for ssh-psi */
 int	 sshkey_kem_dec(struct sshkey *, u_char **, size_t *,
     const u_char *, size_t);
-int sshkey_create_kem_enc(struct ssh *ssh, const struct sshkey **keys, size_t keyslen, u_char (*hashes)[SHA256_DIGEST_LENGTH], u_char r[32]);
+int sshkey_create_kem_enc(struct ssh *ssh, const struct sshkey **keys, size_t *keyslen, u_char (*hashes)[SHA256_DIGEST_LENGTH], u_char r[32]);
 int sshkey_prepare_psi_input(struct ssh *ssh, const struct sshkey *key, const u_char *msg, size_t msglen, u_char digest[SHA256_DIGEST_LENGTH], u_char **keyhash);
 size_t ssh_rsa_get_c_len(const struct sshkey *key);
 

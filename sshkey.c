@@ -281,7 +281,7 @@ out:
 // EC.msg() for all rs and cs (free for RSA but we ignore that)
 // H(pk, i) -> c_i (use digest_copystate)
 int
-sshkey_create_kem_enc(struct ssh *ssh, const struct sshkey **keys, size_t keyslen, u_char (*hashes)[SHA256_DIGEST_LENGTH], u_char r[32])
+sshkey_create_kem_enc(struct ssh *ssh, const struct sshkey **keys, size_t *keyslen, u_char (*hashes)[SHA256_DIGEST_LENGTH], u_char r[32])
 {
     debug("KEM ENC");
 
@@ -297,8 +297,9 @@ sshkey_create_kem_enc(struct ssh *ssh, const struct sshkey **keys, size_t keysle
 	if ((err = sshpkt_start(ssh, SSH2_MSG_USERAUTH_PSI_KEM)) != 0)
         return err;
 
+    size_t hashlen = 0;
     size_t rsakeybuckets = 0;
-    for (size_t i=0; i < keyslen; i++) {
+    for (size_t i=0; i < *keyslen; i++) {
         size_t j = sshkey_ssh_idx(keys[i]);
         if (keytypes[j].type == KEY_RSA || keytypes[j].type == KEY_RSA_CERT)
         {
@@ -368,12 +369,12 @@ sshkey_create_kem_enc(struct ssh *ssh, const struct sshkey **keys, size_t keysle
         goto out;
 
     size_t polyidx = 0;
-    for (size_t i=0; i < keyslen; i++) {
+    for (size_t i=0; i < *keyslen; i++) {
         if (keys[i]->type == KEY_RSA || keys[i]->type == KEY_RSA_CERT)
         {
             u_char *pkhash = NULL;
             if ((err = ssh_rsa_kem_enc(keys[i], &rsac, &rsaclen, &msg, &mlen)) !=0 ||
-                (err = sshkey_prepare_psi_input(ssh, keys[i], msg, mlen, hashes[i], &pkhash)) != 0)
+                (err = sshkey_prepare_psi_input(ssh, keys[i], msg, mlen, hashes[hashlen], &pkhash)) != 0)
                 goto out;
 
             for (size_t j = 0; j < rsaclen; j += 32)
@@ -391,6 +392,7 @@ sshkey_create_kem_enc(struct ssh *ssh, const struct sshkey **keys, size_t keysle
                 polyidx++;
             }
             free(pkhash);
+            hashlen++;
         }
         freezero(rsac, rsaclen);
         freezero(msg, mlen);
@@ -408,7 +410,7 @@ sshkey_create_kem_enc(struct ssh *ssh, const struct sshkey **keys, size_t keysle
         goto out;
 
     // Loop through the keys calling msg
-    for (size_t i=0; i < keyslen; i++) {
+    for (size_t i=0; i < *keyslen; i++) {
         size_t j = sshkey_ssh_idx(keys[i]);
         if (keytypes[j].type != -1 && buckets[j].c != NULL)
         {
@@ -418,12 +420,11 @@ sshkey_create_kem_enc(struct ssh *ssh, const struct sshkey **keys, size_t keysle
                 # ifdef OPENSSL_HAS_ECC
                     case KEY_ECDSA_CERT:
                     case KEY_ECDSA:
-                        debug("ECDSA");
                         if ((err = ssh_ecdsa_kem_msg(keys[i], &msg, &mlen, buckets[j].r)) != 0 ||
-                            (err = sshkey_prepare_psi_input(ssh, keys[i], msg, mlen, hashes[i], NULL)) != 0) {
-                            debug("ECDSA exploded lol");
+                            (err = sshkey_prepare_psi_input(ssh, keys[i], msg, mlen, hashes[hashlen], NULL)) != 0) {
                             goto out;
                         }
+                        hashlen++;
                         break;
                 # endif /* OPENSSL_HAS_ECC */
                     case KEY_RSA_CERT:
@@ -433,9 +434,10 @@ sshkey_create_kem_enc(struct ssh *ssh, const struct sshkey **keys, size_t keysle
                     case KEY_ED25519:
                     case KEY_ED25519_CERT:
                         if ((err = ssh_ed25519_kem_msg(keys[i], &msg, &mlen, buckets[j].r)) != 0 ||
-                            (err = sshkey_prepare_psi_input(ssh, keys[i], msg, mlen, hashes[i], NULL)) != 0) {
+                            (err = sshkey_prepare_psi_input(ssh, keys[i], msg, mlen, hashes[hashlen], NULL)) != 0) {
                             goto out;
                         }
+                        hashlen++;
                         break;
                     default:
                         break;
@@ -445,6 +447,8 @@ sshkey_create_kem_enc(struct ssh *ssh, const struct sshkey **keys, size_t keysle
         msg = NULL;
         mlen = 0;
     }
+
+    *keyslen = hashlen;
 
 out:
     freezero(rsac, rsaclen);
