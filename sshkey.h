@@ -256,7 +256,8 @@ int	 sshkey_get_sigtype(const u_char *, size_t, char **);
 int	 sshkey_kem_dec(struct sshkey *, u_char **, size_t *,
     const u_char *, size_t);
 int sshkey_create_kem_enc(struct ssh *ssh, const struct sshkey **keys, size_t keyslen, u_char (*hashes)[SHA256_DIGEST_LENGTH], u_char r[32]);
-int sshkey_prepare_psi_input(struct ssh *ssh, const struct sshkey *key, const u_char *msg, size_t msglen, u_char digest[SHA256_DIGEST_LENGTH]);
+int sshkey_prepare_psi_input(struct ssh *ssh, const struct sshkey *key, const u_char *msg, size_t msglen, u_char digest[SHA256_DIGEST_LENGTH], u_char **keyhash);
+size_t ssh_rsa_get_c_len(const struct sshkey *key);
 
 
 /* for debug */
@@ -300,6 +301,7 @@ int ssh_rsa_sign(const struct sshkey *key,
 int ssh_rsa_verify(const struct sshkey *key,
     const u_char *sig, size_t siglen, const u_char *data, size_t datalen,
     const char *alg);
+
 int ssh_rsa_kem_dec(const struct sshkey *key, u_char **kem, size_t *klen,
     const u_char *gr, size_t grlen);
 int ssh_rsa_kem_enc(const struct sshkey *key, u_char **c, size_t *clen,

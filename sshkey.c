@@ -29,9 +29,11 @@
 #include "kex.h"
 #include "log.h"
 #include "openbsd-compat/openbsd-compat.h"
+#include "poly_interpolate.h"
 #include "smult_curve25519_ref.h"
 
 #include <openssl/ec.h>
+#include <sys/param.h>
 #include <sys/types.h>
 #include <netinet/in.h>
 
@@ -183,7 +185,7 @@ struct kembucket {
 
 // 'ssh-psi'||session_id||pk_digest||m for each zip(m, pk)
 int
-sshkey_prepare_psi_input(struct ssh *ssh, const struct sshkey *key, const u_char *msg, size_t msglen, u_char digest[SHA256_DIGEST_LENGTH])
+sshkey_prepare_psi_input(struct ssh *ssh, const struct sshkey *key, const u_char *msg, size_t msglen, u_char digest[SHA256_DIGEST_LENGTH], u_char **keyhash)
 {
     debug("Preparing PSI Input");
     int ret = SSH_ERR_INTERNAL_ERROR;
@@ -194,15 +196,15 @@ sshkey_prepare_psi_input(struct ssh *ssh, const struct sshkey *key, const u_char
     if ((b = sshbuf_new()) == NULL)
         return SSH_ERR_ALLOC_FAIL;
 
-    u_char *keyhash = NULL;
+    u_char *keyhash_temp = NULL;
     size_t keyhashlen = 0;
 
-    if ((ret = sshkey_fingerprint_raw(key, SSH_DIGEST_SHA256, &keyhash, &keyhashlen)) != 0)
+    if ((ret = sshkey_fingerprint_raw(key, SSH_DIGEST_SHA256, &keyhash_temp, &keyhashlen)) != 0)
         goto out;
 
     if ((ret = sshbuf_put_cstring(b, "ssh-psi")) != 0 ||
         (ret = sshbuf_putb(b, ssh->kex->session_id)) != 0 ||
-        (ret = sshbuf_put(b, keyhash, keyhashlen)) != 0 ||
+        (ret = sshbuf_put(b, keyhash_temp, keyhashlen)) != 0 ||
         (ret = sshbuf_put_string(b, msg, msglen)) != 0) {
         goto out;
     }
@@ -211,9 +213,15 @@ sshkey_prepare_psi_input(struct ssh *ssh, const struct sshkey *key, const u_char
         goto out;
     }
 
+    if (keyhash != NULL) {
+        *keyhash = keyhash_temp;
+        keyhash_temp = NULL;
+    }
+
+
   out:
     debug("ret PSI Input");
-    freezero(keyhash, keyhashlen);
+    freezero(keyhash_temp, keyhashlen);
 	ssh_digest_free(hashctx);
     sshbuf_free(b);
     return ret;
@@ -271,6 +279,7 @@ out:
 // Serialize cs to send them
 // Send them!
 // EC.msg() for all rs and cs (free for RSA but we ignore that)
+// H(pk, i) -> c_i (use digest_copystate)
 int
 sshkey_create_kem_enc(struct ssh *ssh, const struct sshkey **keys, size_t keyslen, u_char (*hashes)[SHA256_DIGEST_LENGTH], u_char r[32])
 {
@@ -279,14 +288,23 @@ sshkey_create_kem_enc(struct ssh *ssh, const struct sshkey **keys, size_t keysle
     int err = SSH_ERR_INTERNAL_ERROR;
     size_t unique_keytypes = 0;
     struct kembucket buckets[NUM_KEYTYPES] = {0};
+    u_char (*rsa_x)[32] = NULL, (*rsa_y)[32] = NULL;
+    u_char *msg = NULL;
+    size_t mlen = 0;
+    u_char *rsac = NULL;
+    size_t rsaclen = 0;
 
 	if ((err = sshpkt_start(ssh, SSH2_MSG_USERAUTH_PSI_KEM)) != 0)
         return err;
 
+    size_t rsakeybuckets = 0;
     for (size_t i=0; i < keyslen; i++) {
         size_t j = sshkey_ssh_idx(keys[i]);
-
-        if (keytypes[j].type != -1 && buckets[j].c == NULL)
+        if (keytypes[j].type == KEY_RSA || keytypes[j].type == KEY_RSA_CERT)
+        {
+            rsakeybuckets += (ssh_rsa_get_c_len(keys[i]) + 31)/32;
+        }
+        else if (keytypes[j].type != -1 && buckets[j].c == NULL)
         {
             switch(keytypes[j].type) {
                 #ifdef WITH_OPENSSL
@@ -296,13 +314,9 @@ sshkey_create_kem_enc(struct ssh *ssh, const struct sshkey **keys, size_t keysle
                         if ((err = ssh_ecdsa_kem_enc(keys[i]->ecdsa_nid, &buckets[j].c, &buckets[j].clen, &buckets[j].r)) != 0)
                             goto out;
 
-
                         unique_keytypes++;
                         break;
                 # endif /* OPENSSL_HAS_ECC */
-                    case KEY_RSA_CERT:
-                    case KEY_RSA:
-                        break;
                 #endif /* WITH_OPENSSL */
                     case KEY_ED25519:
                     case KEY_ED25519_CERT:
@@ -332,6 +346,12 @@ sshkey_create_kem_enc(struct ssh *ssh, const struct sshkey **keys, size_t keysle
         if ((err = sshpkt_put_string(ssh, buckets[j].c, buckets[j].clen)) != 0)
             return err;
     }
+    if ((rsa_x = malloc(rsakeybuckets * sizeof(*rsa_x))) == NULL||
+        (rsa_y = malloc(rsakeybuckets * sizeof(*rsa_y))) == NULL) {
+        err = SSH_ERR_ALLOC_FAIL;
+        goto out;
+    }
+
 
     // Miniclamp (TM)
     randombytes(r, 32);
@@ -345,11 +365,47 @@ sshkey_create_kem_enc(struct ssh *ssh, const struct sshkey **keys, size_t keysle
 
     if ((err = sshpkt_put(ssh, grwhole, 32)) != 0 ||
         (err = sshpkt_put(ssh, grtwist, 32)) != 0)
-        return err;
+        goto out;
 
-    if ((err = sshpkt_send(ssh)) != 0 || ssh_packet_write_wait(ssh))
-        return err;
-    debug("Server: sent psi kems");
+    size_t polyidx = 0;
+    for (size_t i=0; i < keyslen; i++) {
+        if (keys[i]->type == KEY_RSA || keys[i]->type == KEY_RSA_CERT)
+        {
+            u_char *pkhash = NULL;
+            if ((err = ssh_rsa_kem_enc(keys[i], &rsac, &rsaclen, &msg, &mlen)) !=0 ||
+                (err = sshkey_prepare_psi_input(ssh, keys[i], msg, mlen, hashes[i], &pkhash)) != 0)
+                goto out;
+
+            for (size_t j = 0; j < rsaclen; j += 32)
+            {
+
+                // Find H(pk||j)
+                u_char j_char = j/32;
+                struct ssh_digest_ctx *ctx = ssh_digest_start(SSH_DIGEST_SHA256);
+                ssh_digest_update(ctx, pkhash, SHA256_DIGEST_LENGTH);
+                ssh_digest_update(ctx, &j_char, 1);
+                ssh_digest_final(ctx, rsa_x[polyidx], SHA256_DIGEST_LENGTH);
+
+                memcpy(rsa_y[polyidx], rsac + j, 32);
+
+                polyidx++;
+            }
+            free(pkhash);
+        }
+        freezero(rsac, rsaclen);
+        freezero(msg, mlen);
+        msg = rsac = NULL;
+        mlen = rsaclen = 0;
+    }
+
+    u_char *rsapoly = (u_char*) rsa_y;
+
+    polynomial_interpolate(rsa_x, rsa_y, polyidx, rsapoly);
+    if ((err = sshpkt_put_string(ssh, rsapoly, polyidx*32)) != 0)
+        goto out;
+
+    if ((err = sshpkt_send(ssh)) != 0 || (err = ssh_packet_write_wait(ssh)))
+        goto out;
 
     // Loop through the keys calling msg
     for (size_t i=0; i < keyslen; i++) {
@@ -357,8 +413,6 @@ sshkey_create_kem_enc(struct ssh *ssh, const struct sshkey **keys, size_t keysle
         if (keytypes[j].type != -1 && buckets[j].c != NULL)
         {
             debug("Server: this is a key %s", keytypes[j].name);
-            u_char *msg;
-            size_t mlen;
             switch(keytypes[j].type) {
                 #ifdef WITH_OPENSSL
                 # ifdef OPENSSL_HAS_ECC
@@ -366,7 +420,7 @@ sshkey_create_kem_enc(struct ssh *ssh, const struct sshkey **keys, size_t keysle
                     case KEY_ECDSA:
                         debug("ECDSA");
                         if ((err = ssh_ecdsa_kem_msg(keys[i], &msg, &mlen, buckets[j].r)) != 0 ||
-                            (err = sshkey_prepare_psi_input(ssh, keys[i], msg, mlen, hashes[i])) != 0) {
+                            (err = sshkey_prepare_psi_input(ssh, keys[i], msg, mlen, hashes[i], NULL)) != 0) {
                             debug("ECDSA exploded lol");
                             goto out;
                         }
@@ -379,17 +433,24 @@ sshkey_create_kem_enc(struct ssh *ssh, const struct sshkey **keys, size_t keysle
                     case KEY_ED25519:
                     case KEY_ED25519_CERT:
                         if ((err = ssh_ed25519_kem_msg(keys[i], &msg, &mlen, buckets[j].r)) != 0 ||
-                            (err = sshkey_prepare_psi_input(ssh, keys[i], msg, mlen, hashes[i])) != 0) {
-                                goto out;
+                            (err = sshkey_prepare_psi_input(ssh, keys[i], msg, mlen, hashes[i], NULL)) != 0) {
+                            goto out;
                         }
                         break;
                     default:
                         break;
             }
         }
+        freezero(msg, mlen);
+        msg = NULL;
+        mlen = 0;
     }
 
 out:
+    freezero(rsac, rsaclen);
+    freezero(msg, mlen);
+    freezero(rsa_x, rsakeybuckets * sizeof(*rsa_x));
+    freezero(rsa_y, rsakeybuckets * sizeof(*rsa_y));
     for (size_t i=0; i < NUM_KEYTYPES; i++) {
         if (buckets[i].c == NULL)
             continue;
@@ -3012,24 +3073,6 @@ sshkey_check_sigtype(const u_char *sig, size_t siglen,
 	r = strcmp(expected_alg, sigtype) == 0;
 	free(sigtype);
 	return r ? 0 : SSH_ERR_SIGN_ALG_UNSUPPORTED;
-}
-
-int
-sshkey_psi(u_char** intersection,
-    struct sshkey **privkeys, const size_t privkeys_len,
-    u_char **serverkeys, const size_t serverkeys_len,
-    const u_char *gr)
-{
-    int ret = 0;
-    u_char **privkeys_char = (u_char**) malloc(sizeof(u_char*) * privkeys_len);
-    for (size_t i = 0; i < privkeys_len; i++) {
-        privkeys_char[i] = privkeys[i]->ed25519_sk;
-    }
-    //ret = crypto_psi_ed25519(intersection, privkeys_char, privkeys_len, serverkeys, serverkeys_len, gr);
-
-out:
-    free(privkeys_char);
-    return ret;
 }
 
 int

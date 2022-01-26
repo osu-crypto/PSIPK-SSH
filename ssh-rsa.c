@@ -16,6 +16,8 @@
  */
 
 #include "includes.h"
+#include "misc.h"
+#include <openssl/bn.h>
 
 #ifdef WITH_OPENSSL
 
@@ -159,22 +161,29 @@ ssh_rsa_complete_crt_parameters(struct sshkey *key, const BIGNUM *iqmp)
 	return r;
 }
 
+size_t
+ssh_rsa_get_c_len(const struct sshkey *key)
+{
+    const int statistical_sec_param = 128;
+	int rsa_size = RSA_size(key->rsa);
+    return ROUNDUP(rsa_size + statistical_sec_param/8, 32);
+}
 
 // KEM.enc(pk) -> return (sampled r, encrypted r)
 int
 ssh_rsa_kem_enc(const struct sshkey *key, u_char **c, size_t *clen,
     u_char **r, size_t *rlen)
 {
-    const int statistical_sec_param = 64;
     int ret = SSH_ERR_INTERNAL_ERROR;
 	const BIGNUM *rsa_n;
 	BIGNUM *rsa_e = NULL;
 	BN_CTX *ctx = NULL;
 	BIGNUM *numr = NULL, *x = NULL, *f = NULL, *cc = NULL;
 
+	int m = ssh_rsa_get_c_len(key) * 8;
 	int rsa_size = RSA_size(key->rsa);
-	int m = rsa_size * 8 + statistical_sec_param;
     u_char *temp_c = NULL, *temp_r = NULL;
+    debug("We're in rsa kem");
 
 	if ((numr = BN_new()) == NULL ||
         (cc = BN_new()) == NULL ||
@@ -205,10 +214,14 @@ ssh_rsa_kem_enc(const struct sshkey *key, u_char **c, size_t *clen,
 		goto out;
 	}
 
-    BN_set_flags(rsa_e, BN_FLG_CONSTTIME);
+    debug("Done malloc rsa_kem");
+
     RSA_get0_key(key->rsa, &rsa_n, (const BIGNUM **)&rsa_e, NULL);
+    BN_set_flags(rsa_e, BN_FLG_CONSTTIME);
     BN_rand_range(numr, rsa_n);
     BN_mod_exp(cc, numr, rsa_e, rsa_n, ctx);
+
+    debug("Done rsa_kem raw");
 
     // padding k*N + c
 
@@ -220,9 +233,15 @@ ssh_rsa_kem_enc(const struct sshkey *key, u_char **c, size_t *clen,
     BN_sub(x, x, f);
     BN_add(x, x, cc);
 
+    debug("Done rsa_kem padding");
+
     // serialize (lance is worried)
-    BN_bn2binpad(x, temp_c, m/8);
-    BN_bn2binpad(numr, temp_r, rsa_size);
+    if (BN_bn2binpad(x, temp_c, m/8) == -1 ||
+        BN_bn2binpad(numr, temp_r, rsa_size) == -1) {
+        debug("There's a problem with rsa kem");
+        ret = SSH_ERR_BIGNUM_TOO_LARGE;
+        goto out;
+    }
 
     *c = temp_c;
     temp_c = NULL;
@@ -255,11 +274,19 @@ ssh_rsa_kem_dec(const struct sshkey *key, u_char **kem, size_t *klen,
 	size_t maxklen = 0;
     u_char *temp_kem;
     int ret = SSH_ERR_INTERNAL_ERROR;
+    const RSA_METHOD * method = NULL;
+
+	BN_CTX *ctx = NULL;
+    BIGNUM *bnmod = NULL;
+    BIGNUM *bnchal = NULL;
 
 	if (klen != NULL)
 		*klen = 0;
 	if (kem != NULL)
 		*kem = NULL;
+
+	if ((ctx = BN_CTX_new()) == NULL)
+		return SSH_ERR_ALLOC_FAIL;
 
 	if (key == NULL || key->rsa == NULL ||
 	    sshkey_type_plain(key->type) != KEY_RSA)
@@ -278,8 +305,22 @@ ssh_rsa_kem_dec(const struct sshkey *key, u_char **kem, size_t *klen,
 		goto out;
 	}
 
-    RSA_private_decrypt(challen, chal, temp_kem, key->rsa, RSA_NO_PADDING);
-	ret = 0;
+	if ((bnmod = BN_new()) == NULL) {
+		ret = SSH_ERR_ALLOC_FAIL;
+		goto out;
+    }
+
+    bnchal = BN_bin2bn(chal, challen, NULL);
+    method = RSA_get_method(key->rsa);
+
+    if(!RSA_meth_get_mod_exp(method)(bnmod, bnchal, key->rsa, ctx) ||
+        BN_bn2binpad(bnmod, temp_kem, maxklen) == -1)
+    {
+        ret = SSH_ERR_BIGNUM_TOO_LARGE;
+        goto out;
+    }
+
+    ret = 0;
 	if (kem != NULL) {
         *kem = temp_kem;
         temp_kem = NULL;
@@ -290,6 +331,9 @@ ssh_rsa_kem_dec(const struct sshkey *key, u_char **kem, size_t *klen,
 
  out:
 	freezero(temp_kem, maxklen);
+    BN_clear_free(bnmod);
+    BN_clear_free(bnchal);
+    BN_CTX_free(ctx);
 	return ret;
 }
 

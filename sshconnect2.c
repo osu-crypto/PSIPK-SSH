@@ -833,7 +833,6 @@ input_userauth_psi_kem_dec(int type, u_int32_t seq, struct ssh *ssh)
     Identity *id = NULL;
 
     int ret = 0;
-    int err = 0;
 
     size_t validkeycount = 0;
     size_t mollerbyteslen = 0;
@@ -844,6 +843,14 @@ input_userauth_psi_kem_dec(int type, u_int32_t seq, struct ssh *ssh)
     u_char *poly = NULL;
     struct stage2data *data = NULL;
 
+    u_char *rsapoly = NULL;
+    size_t rsapolylen = 0;
+
+    u_char *msg = NULL;
+    size_t mlen = 0;
+
+    u_char (*rsa_x)[32] = NULL, (*rsa_y)[32] = NULL;
+
 	ssh_dispatch_set(ssh, SSH2_MSG_USERAUTH_PSI_KEM, NULL);
 
 	if (authctxt == NULL)
@@ -853,27 +860,30 @@ input_userauth_psi_kem_dec(int type, u_int32_t seq, struct ssh *ssh)
 		fatal("input_userauth_psi_kem_dec: no ssh-agent found");
 
 
+    size_t rsakeybuckets = 0;
     size_t kem_count = 0;
-    if ((err = sshpkt_get_u64(ssh, &kem_count)) != 0)
+    if ((ret = sshpkt_get_u64(ssh, &kem_count)) != 0)
         goto out;
 
     if ((kems = calloc(kem_count, sizeof(struct kemc))) == NULL) {
-        err = SSH_ERR_ALLOC_FAIL;
+        ret = SSH_ERR_ALLOC_FAIL;
         goto out;
     }
 
     for (size_t i = 0; i < kem_count; i++) {
-        if ((err = sshpkt_get_cstring(ssh, &kems[i].name, NULL)) != 0 ||
-            (err = sshpkt_get_string(ssh, &kems[i].c, &kems[i].clen)))
+        if ((ret = sshpkt_get_cstring(ssh, &kems[i].name, NULL)) != 0 ||
+            (ret = sshpkt_get_string(ssh, &kems[i].c, &kems[i].clen)))
             goto out;
     }
 
     u_char grwhole[32];
     u_char grtwist[32];
 
+
     if ((ret = sshpkt_get(ssh, grwhole, 32)) != 0 ||
         (ret = sshpkt_get(ssh, grtwist, 32)) != 0 ||
-        (err = sshpkt_get_end(ssh)) != 0)
+        (ret = sshpkt_get_string(ssh, &rsapoly, &rsapolylen)) != 0 ||
+        (ret = sshpkt_get_end(ssh)) != 0)
         goto out;
 
 	TAILQ_FOREACH(id, &authctxt->keys, next) {
@@ -884,44 +894,88 @@ input_userauth_psi_kem_dec(int type, u_int32_t seq, struct ssh *ssh)
             continue;
 
         validkeycount++;
+
+        if (id->key->type == KEY_RSA || id->key->type == KEY_RSA_CERT) {
+            rsakeybuckets += (ssh_rsa_get_c_len(id->key) + 31)/32;
+        }
+
     }
+    mollerbyteslen = (validkeycount + 7)/8;
 
-
-    if ((data = malloc(sizeof(struct stage2data))) == NULL ||
-        (data->hashes = malloc(validkeycount * sizeof(*data->hashes))) == NULL) {
-        err = SSH_ERR_ALLOC_FAIL;
+    if ((rsa_x = malloc(rsakeybuckets * sizeof(*rsa_x))) == NULL ||
+        (rsa_y = malloc(rsakeybuckets * sizeof(*rsa_y))) == NULL ||
+        (data = malloc(sizeof(struct stage2data))) == NULL ||
+        (data->hashes = malloc(validkeycount * sizeof(*data->hashes))) == NULL ||
+        (mollerbits = malloc(mollerbyteslen * sizeof(u_char))) == NULL ||
+        (points_y = malloc(validkeycount * sizeof(*points_y))) == NULL ||
+        (exps = malloc(validkeycount * sizeof(*exps))) == NULL ||
+        (poly = malloc(validkeycount * 32)) == NULL) {
+        ret = SSH_ERR_ALLOC_FAIL;
         goto out;
     }
+
+    size_t polyidx = 0;
+	TAILQ_FOREACH(id, &authctxt->keys, next) {
+        if (id->agent_fd == -1)
+            continue;
+
+        if (id->key->type == KEY_RSA || id->key->type == KEY_RSA_CERT) {
+            size_t rsaclen = ssh_rsa_get_c_len(id->key);
+            u_char *pkhash = NULL;
+            size_t pkhashlen = 0;
+            if ((ret = sshkey_fingerprint_raw(id->key, SSH_DIGEST_SHA256, &pkhash, &pkhashlen)) != 0)
+                goto out;
+            for (size_t j = 0; j < rsaclen; j += 32)
+            {
+                // Find H(pk||j)
+                u_char j_char = j/32;
+                struct ssh_digest_ctx *ctx = ssh_digest_start(SSH_DIGEST_SHA256);
+                ssh_digest_update(ctx, pkhash, SHA256_DIGEST_LENGTH);
+                ssh_digest_update(ctx, &j_char, 1);
+                ssh_digest_final(ctx, rsa_x[polyidx], SHA256_DIGEST_LENGTH);
+
+                polyidx++;
+            }
+            free(pkhash);
+            pkhash = NULL;
+        }
+    }
+
+    polynomial_evaluate(rsa_x, rsa_y, polyidx, rsapoly, rsapolylen/32);
+    polyidx = 0;
 
     size_t hashidx = 0;
 	TAILQ_FOREACH(id, &authctxt->keys, next) {
         if (id->agent_fd == -1)
             continue;
 
+        if (id->key->type == KEY_RSA || id->key->type == KEY_RSA_CERT) {
+            size_t rsaclen = ssh_rsa_get_c_len(id->key);
+
+            if ((ret = ssh_agent_multi_kem(id->agent_fd, id->key, rsa_y[polyidx], rsaclen, &msg, &mlen)) != 0 ||
+                (ret = sshkey_prepare_psi_input(ssh, id->key, msg, mlen, data->hashes[hashidx++], NULL)) != 0)
+                goto out;
+            polyidx += (rsaclen + 31) / 32;
+            freezero(msg, mlen);
+            msg = NULL;
+            continue;
+        }
+
         const char *keyname = sshkey_ssh_name(id->key);
         if (strcmp(keyname, "ssh-unknown") == 0)
             continue;
 
-        u_char *msg = NULL;
-        size_t mlen = 0;
         for (size_t j = 0; j < kem_count; j++) {
             if (strcmp(keyname, kems[j].name) == 0) {
-                if ((err = ssh_agent_multi_kem(id->agent_fd, id->key, kems[j].c, kems[j].clen, &msg, &mlen)) != 0 ||
-                    (err = sshkey_prepare_psi_input(ssh, id->key, msg, mlen, data->hashes[hashidx++])) != 0)
+                if ((ret = ssh_agent_multi_kem(id->agent_fd, id->key, kems[j].c, kems[j].clen, &msg, &mlen)) != 0 ||
+                    (ret = sshkey_prepare_psi_input(ssh, id->key, msg, mlen, data->hashes[hashidx++], NULL)) != 0)
                     goto out;
+
                 break;
             }
         }
-    }
-
-    mollerbyteslen = (validkeycount + 7)/8;
-
-    if ((mollerbits = malloc(mollerbyteslen * sizeof(u_char))) == NULL ||
-        (points_y = malloc(validkeycount * sizeof(*points_y))) == NULL ||
-        (exps = malloc(validkeycount * sizeof(*exps))) == NULL ||
-        (poly = malloc(validkeycount * 32)) == NULL) {
-        err = SSH_ERR_ALLOC_FAIL;
-        goto out;
+        freezero(msg, mlen);
+        msg = NULL;
     }
 
 	randombytes(mollerbits, mollerbyteslen);
@@ -944,10 +998,10 @@ input_userauth_psi_kem_dec(int type, u_int32_t seq, struct ssh *ssh)
     polynomial_interpolate(data->hashes, points_y, validkeycount, poly);
 
     ssh_dispatch_set(ssh, SSH2_MSG_USERAUTH_PSI_CHAL, &psi_chal);
-    if ((err = sshpkt_start(ssh, SSH2_MSG_USERAUTH_PSI_INTERPOLATE)) != 0 ||
-        (err = sshpkt_put_string(ssh, poly, validkeycount * 32) != 0) ||
-        (err = sshpkt_send(ssh) != 0) ||
-        (err = ssh_packet_write_wait(ssh) != 0))
+    if ((ret = sshpkt_start(ssh, SSH2_MSG_USERAUTH_PSI_INTERPOLATE)) != 0 ||
+        (ret = sshpkt_put_string(ssh, poly, validkeycount * 32) != 0) ||
+        (ret = sshpkt_send(ssh) != 0) ||
+        (ret = ssh_packet_write_wait(ssh) != 0))
         goto out;
 
 
@@ -979,10 +1033,14 @@ out:
         freezero(data->hashes, validkeycount * sizeof(*data->hashes));
 
     free(data);
+    free(poly);
+    free(rsapoly);
+    freezero(msg, mlen);
     freezero(exps, validkeycount * sizeof(*exps));
     freezero(points_y, validkeycount * sizeof(*points_y));
     freezero(mollerbits, mollerbyteslen);
-    free(poly);
+    freezero(rsa_x, rsakeybuckets * sizeof(*rsa_x));
+    freezero(rsa_y, rsakeybuckets * sizeof(*rsa_y));
 	return ret;
 }
 
