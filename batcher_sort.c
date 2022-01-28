@@ -15,7 +15,8 @@ void batcher_even_odd_sort(unsigned char *array, size_t elem_size, size_t key_si
         {
             for (size_t chunk = 0; chunk < n_elems; chunk += 2 * sort_size)
             {
-                for (size_t merge_pos = merge_skip & ~sort_size; merge_pos < sort_size;
+				size_t skip = merge_skip & ~sort_size;
+                for (size_t merge_pos = skip; merge_pos < 2 * sort_size - skip;
                      merge_pos += 2 * merge_skip)
                 {
                     for (size_t merge_start = 0; merge_start < merge_skip; merge_start++)
