@@ -73,6 +73,12 @@ struct stage1data {
     u_char r[32];
 };
 
+struct keyvector {
+    struct sshkey **keys;
+    size_t keyslen;
+    size_t alloclen;
+};
+
 /* import */
 extern ServerOptions options;
 
@@ -118,13 +124,13 @@ not_found:
  * Checks whether key is allowed in authorized_keys-format file,
  * returns 1 if the key is allowed or 0 otherwise.
  */
-static size_t
-check_authkeys_file(struct ssh *ssh, struct passwd *pw, FILE *f, char *file, struct sshkey **keys)
+static int
+check_authkeys_file(struct ssh *ssh, struct passwd *pw, FILE *f, char *file, struct keyvector *keys)
 {
 	char *cp, *line = NULL, loc[256];
 	size_t linesize = 0;
 	u_long linenum = 0;
-	size_t keyscount = 0;
+    int err = 0;
 
 
 	while (getline(&line, &linesize, f) != -1) {
@@ -136,34 +142,45 @@ check_authkeys_file(struct ssh *ssh, struct passwd *pw, FILE *f, char *file, str
 		if (!*cp || *cp == '\n' || *cp == '#')
 			continue;
 		snprintf(loc, sizeof(loc), "%.200s:%lu", file, linenum);
-		if (get_key_from_line(ssh, pw, cp, loc, keys + keyscount) == 0)
-			keyscount++;
+        if (keys->keyslen + 1 >= keys->alloclen) {
+            struct sshkey **newkeys = NULL;
+            size_t newalloc = 2*keys->alloclen + 1;
+            if ((newkeys = realloc(keys->keys, sizeof(struct sshkey*) * newalloc)) == NULL) {
+                err = SSH_ERR_ALLOC_FAIL;
+                goto out;
+            }
+            keys->alloclen = newalloc;
+            keys->keys = newkeys;
+        }
+		if (get_key_from_line(ssh, pw, cp, loc, &keys->keys[keys->keyslen]) == 0)
+            keys->keyslen++;
 	}
+out:
 	free(line);
-	return keyscount;
+	return err;
 }
 
 /*
  * Checks whether key is allowed in file.
  * returns 1 if the key is allowed or 0 otherwise.
  */
-static size_t
-get_all_authorized_keys2(struct ssh *ssh, struct passwd *pw, char *file, struct sshkey **keys)
+static int
+get_all_authorized_keys2(struct ssh *ssh, struct passwd *pw, char *file, struct keyvector *keys)
 {
 	FILE *f;
-	size_t foundcount = 0;
+    int err = 0;
 
 	/* Temporarily use the user's uid. */
 	temporarily_use_uid(pw);
 
 	debug("trying public key file %s", file);
 	if ((f = auth_openkeyfile(file, pw, options.strict_modes)) != NULL) {
-		foundcount += check_authkeys_file(ssh, pw, f, file, keys + foundcount);
+		err = check_authkeys_file(ssh, pw, f, file, keys);
 		fclose(f);
 	}
 
 	restore_uid();
-	return foundcount;
+    return err;
 }
 
 
@@ -171,46 +188,48 @@ static int
 get_all_authorized_keys(struct ssh *ssh, struct passwd *pw)
 {
 	Authctxt *authctxt = (Authctxt *) ssh->authctxt;
-	u_int success = 0, i;
+	u_int err = 0, i;
 	char *file;
 
 	// XXX 256 limit to authorized_keys can overflow; set a limit
-	struct sshkey *keys[256];
-	size_t keyslen = 0;
+    struct keyvector keys = {0};
 
-	for (i = 0; !success && i < options.num_authkeys_files; i++) {
+	for (i = 0; i < options.num_authkeys_files; i++) {
 		if (strcasecmp(options.authorized_keys_files[i], "none") == 0)
 			continue;
 		file = expand_authorized_keys(options.authorized_keys_files[i], pw);
 		debug("Authorized keys file %s", file);
-		keyslen += get_all_authorized_keys2(ssh, pw, file, keys + keyslen);
-		debug("Authorized keys found %lu", keyslen);
+        if ((err = get_all_authorized_keys2(ssh, pw, file, &keys)) != 0)
+            fatal_fr(err, "retrieving authorized_keys");
+		debug("Authorized keys found %lu", keys.keyslen);
 		free(file);
 	}
 
-    struct stage1data* data;
+    struct stage1data* data = NULL;
 
 	if ((data = malloc(sizeof(struct stage1data))) == NULL ||
-        (data->psi_inputs.hashes = malloc(sizeof(*data->psi_inputs.hashes) * keyslen)) == NULL)
+        (data->psi_inputs.hashes = malloc(sizeof(*data->psi_inputs.hashes) * keys.keyslen)) == NULL)
     {
 		fatal_fr(SSH_ERR_ALLOC_FAIL, "allocating x/y coords");
 	}
 
-    size_t hashlen = keyslen;
+    size_t hashlen = keys.keyslen;
 
 	ssh_dispatch_set(ssh, SSH2_MSG_USERAUTH_PSI_INTERPOLATE, &psi_eval_poly);
-    success = sshkey_create_kem_enc(ssh, (const struct sshkey**)keys, &hashlen, data->psi_inputs.hashes, data->r);
+    if((err = sshkey_create_kem_enc(ssh, (const struct sshkey**)keys.keys, &hashlen, data->psi_inputs.hashes, data->r)) != 0)
+        fatal_fr(err, "sending kem encryptions");
 
     data->psi_inputs.hashcount = hashlen;
     ssh_set_app_data(ssh, data);
 
 	authctxt->postponed = 1;
 
-	for (size_t i = 0; i < keyslen; i++)
+	for (size_t i = 0; i < keys.keyslen; i++)
 	{
-		sshkey_free(keys[i]);
+		sshkey_free(keys.keys[i]);
 	}
-	return success;
+    free(keys.keys);
+	return 0;
 }
 
 // We're going to receive interpolated polynomial (okvs)

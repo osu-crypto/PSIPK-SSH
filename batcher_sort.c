@@ -31,7 +31,7 @@ void batcher_even_odd_sort(unsigned char *array, size_t elem_size, size_t key_si
                 }
             }
 
-done:
+done:   ;
         }
     }
 }
