@@ -1,19 +1,57 @@
 #include "batcher_sort.h"
 
-#include <string.h>
-#include <stdbool.h>
+// Key | Data
+// |--------|
+// Elem size
 
-void batcher_even_odd_sort(u_char *array, size_t elem_size, size_t key_size, size_t n_elems);
+static void sort2(unsigned char *x, unsigned char *y, size_t elem_size, size_t key_size);
+
+void batcher_even_odd_sort(unsigned char *array, size_t elem_size, size_t key_size, size_t n_elems)
 {
+    // sort_size = size of sorted chunks at start of loop.
+    for (size_t sort_size = 1; sort_size < n_elems; sort_size <<= 1)
+    {
+        for (size_t merge_skip = sort_size; merge_skip; merge_skip >>= 1)
+        {
+            for (size_t chunk = 0; chunk < n_elems; chunk += 2 * sort_size)
+            {
+                for (size_t merge_pos = merge_skip & ~sort_size; merge_pos < sort_size;
+                     merge_pos += 2 * merge_skip)
+                {
+                    for (size_t merge_start = 0; merge_start < merge_skip; merge_start++)
+                    {
+                        size_t i = chunk + merge_pos + merge_start;
+                        size_t j = chunk + merge_pos + merge_skip + merge_start;
+                        if (j >= n_elems)
+                            goto done;
+
+                        sort2(array + i * elem_size, array + j * elem_size, elem_size, key_size);
+                    }
+                }
+            }
+
+done:
+        }
+    }
 }
 
-void conditional_swap(u_char *x, u_char *y, size_t size, u_char flag)
+// Swap if flag. flag should be in {0,1}.
+void conditional_swap(unsigned char *x, unsigned char *y, size_t size, unsigned char flag)
 {
     flag = -flag;
     for (size_t i = 0; i < size; ++i)
-        x[i] ^= flag & (x[i] ^ y[i]);
+    {
+        unsigned char diff = flag & (x[i] ^ y[i]);
+        x[i] ^= diff;
+        y[i] ^= diff;
+    }
 }
 
+static void sort2(unsigned char *x, unsigned char *y, size_t elem_size, size_t key_size)
+{
+    unsigned char swap = (sodium_util_compare(x, y, key_size) + 1) >> 1;
+    conditional_swap(x, y, elem_size, swap);
+}
 
 // Copied from libsodium util.c
 
