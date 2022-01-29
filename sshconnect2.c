@@ -779,13 +779,18 @@ psi_chal(int type, u_int32_t seq, struct ssh *ssh)
     }
 
     logit("The server is using %lu keys", s_hasheslen);
-
     // Empty intersection
     if (s_set == 0) {
         debug("Empty intersection. Exiting.");
         sent = 0;
         goto out;
     }
+
+    if (s_hasheslen > 10000) {
+        if (!confirm("Continue connecting (yes/no)? ", NULL))
+            goto out;
+    }
+
 
     if ((ret = sshpkt_start(ssh, SSH2_MSG_USERAUTH_PSI_PROOF)) != 0 ||
         (ret = sshpkt_put(ssh, s, 16)) != 0 ||
@@ -799,8 +804,10 @@ out:
         freezero(data->hashes, data->hashlength * sizeof(*data->hashes));
     free(data);
     free(s_hashes);
-    if (ret == 0 && sent == 0)
+    if (ret == 0 && sent == 0) {
         debug("Didn't send");
+        userauth(ssh, calloc(1, sizeof(char)));
+    }
     return ret;
 }
 
@@ -2689,7 +2696,7 @@ authmethod_get(char *authlist)
 	u_int next;
 
 	/* Use a suitable default if we're passed a nil list.  */
-	if (authlist == NULL || strlen(authlist) == 0)
+	if (authlist == NULL)
 		authlist = options.preferred_authentications;
 
 	if (supported == NULL || strcmp(authlist, supported) != 0) {

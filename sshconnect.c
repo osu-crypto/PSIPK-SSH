@@ -564,7 +564,7 @@ ssh_connect(struct ssh *ssh, const char *host, const char *host_arg,
 }
 
 /* defaults to 'no' */
-static int
+int
 confirm(const char *prompt, const char *fingerprint)
 {
 	const char *msg, *again = "Please type 'yes' or 'no': ";
@@ -1334,7 +1334,7 @@ check_host_key(char *hostname, const struct ssh_conn_info *cinfo,
 		if (options.exit_on_forward_failure && cancelled_forwarding)
 			fatal("Error: forwarding disabled due to host key "
 			    "check failure");
-		
+
 		/*
 		 * XXX Should permit the user to change to use the new id.
 		 * This could be done by converting the host key to an

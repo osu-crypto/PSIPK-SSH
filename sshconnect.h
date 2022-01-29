@@ -92,3 +92,4 @@ void	 maybe_add_key_to_agent(const char *, struct sshkey *,
 void	 load_hostkeys_command(struct hostkeys *, const char *,
     const char *, const struct ssh_conn_info *,
     const struct sshkey *, const char *);
+int confirm(const char *prompt, const char *fingerprint);

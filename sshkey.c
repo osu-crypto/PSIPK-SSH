@@ -187,7 +187,6 @@ struct kembucket {
 int
 sshkey_prepare_psi_input(struct ssh *ssh, const struct sshkey *key, const u_char *msg, size_t msglen, u_char digest[SHA256_DIGEST_LENGTH], u_char **keyhash)
 {
-    debug("Preparing PSI Input");
     int ret = SSH_ERR_INTERNAL_ERROR;
 	struct ssh_digest_ctx *hashctx = NULL;
 	struct sshbuf *b = NULL;
@@ -220,7 +219,6 @@ sshkey_prepare_psi_input(struct ssh *ssh, const struct sshkey *key, const u_char
 
 
   out:
-    debug("ret PSI Input");
     freezero(keyhash_temp, keyhashlen);
 	ssh_digest_free(hashctx);
     sshbuf_free(b);
