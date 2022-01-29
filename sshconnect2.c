@@ -24,6 +24,7 @@
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include "batcher_sort.h"
 #include "includes.h"
 #include "openbsd-compat/openbsd-compat.h"
 #include "poly_interpolate.h"
@@ -717,15 +718,6 @@ struct stage2data {
     size_t hashlength;
 };
 
-static int
-compare_hsh(u_char *hsh1, u_char* hsh2, size_t length)
-{
-    int aredif = 0;
-    for (size_t k = 0; k < 16; k++)
-        aredif |= hsh1[k] ^ hsh2[k];
-    return aredif;
-}
-
 
 static int
 psi_chal(int type, u_int32_t seq, struct ssh *ssh)
@@ -754,28 +746,45 @@ psi_chal(int type, u_int32_t seq, struct ssh *ssh)
 
     s_hasheslen /= SHA256_DIGEST_LENGTH;
 
-    for (size_t i = 0; i < s_hasheslen; i++) {
-        for (size_t j = 0; j < data->hashlength; j++) {
-            u_char xorbuf[16];
-            u_char hshbuf[32];
-            int aredif = compare_hsh(&s_hashes[i*32], data->hashes[j], 16);
-
-            for (size_t k = 16; k < 32; k++)
-                xorbuf[k-16] = s_hashes[i*32 + k] ^ data->hashes[j][k];
-
-            struct ssh_digest_ctx *hashctx = ssh_digest_start(SSH_DIGEST_SHA256);
-            ssh_digest_update(hashctx, xorbuf, 16);
-            ssh_digest_final(hashctx, hshbuf, SHA256_DIGEST_LENGTH);
-            aredif |= compare_hsh(hshbuf, h_s, SHA256_DIGEST_LENGTH);
-            u_char flag = ((unsigned int)aredif - 1) >> 8; // 0xff if aredif==0. 0 otherwise
-
-
-            for (size_t k = 0; k < 16; k++)
-                s[k] ^= (s[k] ^ xorbuf[k]) & flag;
-
-
-            s_set |= flag;
+    // Check that hashes sent by server are monotonically increasing
+    for (size_t i = 0; i < (s_hasheslen - 1)*32; i+=32) {
+        if (sodium_util_compare(&s_hashes[i], &s_hashes[i+32], 16) != -1) {
+            debug("Server keys not sorted");
+            goto out;
         }
+    }
+
+    size_t combinedlen = data->hashlength + s_hasheslen;
+
+    if ((data->hashes = realloc(data->hashes, combinedlen * sizeof(*data->hashes))) == NULL) {
+        ret = SSH_ERR_ALLOC_FAIL;
+        goto out;
+    }
+    memcpy(&data->hashes[data->hashlength], s_hashes, s_hasheslen*32);
+    batcher_even_odd_sort((u_char *)data->hashes, SHA256_DIGEST_LENGTH, SHA256_DIGEST_LENGTH/2, combinedlen);
+
+    for (size_t i = 0; i < (combinedlen-1); i++) {
+        u_char xorbuf[16];
+        u_char hshbuf[32];
+        int aredif = sodium_util_memcmp((u_char *)&data->hashes[i], (u_char *)&data->hashes[(i+1)], 16);
+
+        for (size_t k = 16; k < 32; k++)
+            xorbuf[k-16] = data->hashes[i][k] ^ data->hashes[i+1][k];
+
+        struct ssh_digest_ctx *hashctx = ssh_digest_start(SSH_DIGEST_SHA256);
+        ssh_digest_update(hashctx, xorbuf, 16);
+        ssh_digest_final(hashctx, hshbuf, SHA256_DIGEST_LENGTH);
+        aredif |= sodium_util_memcmp(hshbuf, h_s, SHA256_DIGEST_LENGTH);
+        u_char flag = ~(u_char)aredif; // 0xff if aredif==0. Otherwise 0 if aredif==0xff
+
+
+        // Set s if flag (first half matches and H(s) == h_s)
+        for (size_t k = 0; k < 16; k++)
+            s[k] ^= (s[k] ^ xorbuf[k]) & flag;
+
+
+        s_set |= flag;
+
     }
 
     logit("The server is using %lu keys", s_hasheslen);

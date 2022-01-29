@@ -103,7 +103,7 @@
 #define DBG(x)
 #endif
 
-#define PACKET_MAX_SIZE (256 * 1024)
+#define PACKET_MAX_SIZE (1024 * 1024)
 
 struct packet_state {
 	u_int32_t seqnr;
@@ -986,7 +986,7 @@ ssh_packet_need_rekeying(struct ssh *ssh, u_int outbound_packet_len)
 		return 1;
 
 	/*
-	 * Always rekey when MAX_PACKETS sent in either direction 
+	 * Always rekey when MAX_PACKETS sent in either direction
 	 * As per RFC4344 section 3.1 we do this after 2^31 packets.
 	 */
 	if (state->p_send.packets > MAX_PACKETS ||

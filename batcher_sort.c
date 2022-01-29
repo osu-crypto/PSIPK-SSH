@@ -56,6 +56,7 @@ static void sort2(unsigned char *x, unsigned char *y, size_t elem_size, size_t k
 
 // Copied from libsodium util.c
 
+// 0 if same, -1 if different
 int
 sodium_util_memcmp(const void * const b1_, const void * const b2_, size_t len)
 {

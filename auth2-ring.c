@@ -23,6 +23,7 @@
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include "batcher_sort.h"
 #include "digest.h"
 #include "includes.h"
 
@@ -39,6 +40,7 @@
 #include <stdio.h>
 
 #include "atomicio.h"
+#include "openbsd-compat/sha2.h"
 #include "poly_interpolate.h"
 #include "rijndael.h"
 #include "rijndael256.h"
@@ -193,7 +195,6 @@ get_all_authorized_keys(struct ssh *ssh, struct passwd *pw)
 
 	// XXX 256 limit to authorized_keys can overflow; set a limit
     struct keyvector keys = {0};
-
 	for (i = 0; i < options.num_authkeys_files; i++) {
 		if (strcasecmp(options.authorized_keys_files[i], "none") == 0)
 			continue;
@@ -309,6 +310,7 @@ psi_eval_poly(int type, u_int32_t seq, struct ssh *ssh)
             psi_inputs->hashes[i][j+16] ^= s[j];
     }
     // XXX sort psi_inputs->hashes
+    batcher_even_odd_sort((u_char*)psi_inputs->hashes, SHA256_DIGEST_LENGTH, SHA256_DIGEST_LENGTH/2, psi_inputs->hashcount);
 
     // h_s, grw, grt, hashes
     ssh_dispatch_set(ssh, SSH2_MSG_USERAUTH_PSI_PROOF, &psi_verify_proof);
