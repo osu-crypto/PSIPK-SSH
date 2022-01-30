@@ -25,12 +25,17 @@
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include "config.h"
+#include "defines.h"
 #include "includes.h"
+#include "hostfile.h"
 #include "kex.h"
 #include "log.h"
 #include "openbsd-compat/openbsd-compat.h"
-#include "poly_interpolate.h"
 #include "smult_curve25519_ref.h"
+#include "poly_interpolate.h"
+#include "auth.h"
+#include "sodium.h"
 
 #include <openssl/ec.h>
 #include <sys/param.h>
@@ -282,6 +287,8 @@ int
 sshkey_create_kem_enc(struct ssh *ssh, const struct sshkey **keys, size_t *keyslen, u_char (*hashes)[SHA256_DIGEST_LENGTH], u_char r[32])
 {
     debug("KEM ENC");
+	Authctxt *authctxt = (Authctxt *) ssh->authctxt;
+    struct timespec *timing = authctxt->methoddata;
 
     int err = SSH_ERR_INTERNAL_ERROR;
     size_t unique_keytypes = 0;
@@ -400,7 +407,9 @@ sshkey_create_kem_enc(struct ssh *ssh, const struct sshkey **keys, size_t *keysl
 
     u_char *rsapoly = (u_char*) rsa_y;
 
+    timespec_get(&timing[2], TIME_UTC); // Finish KEM Enc
     polynomial_interpolate(rsa_x, rsa_y, polyidx, rsapoly);
+    timespec_get(&timing[3], TIME_UTC); // Finish polynomial_interpolation
     if ((err = sshpkt_put_string(ssh, rsapoly, polyidx*32)) != 0)
         goto out;
 
@@ -412,7 +421,6 @@ sshkey_create_kem_enc(struct ssh *ssh, const struct sshkey **keys, size_t *keysl
         size_t j = sshkey_ssh_idx(keys[i]);
         if (keytypes[j].type != -1 && buckets[j].c != NULL)
         {
-            debug("Server: this is a key %s", keytypes[j].name);
             switch(keytypes[j].type) {
                 #ifdef WITH_OPENSSL
                 # ifdef OPENSSL_HAS_ECC
@@ -447,6 +455,7 @@ sshkey_create_kem_enc(struct ssh *ssh, const struct sshkey **keys, size_t *keysl
     }
 
     *keyslen = hashlen;
+    timespec_get(&timing[4], TIME_UTC); // Finish KEM Msg
 
 out:
     freezero(rsac, rsaclen);

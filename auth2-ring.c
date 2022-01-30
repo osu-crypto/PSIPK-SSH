@@ -38,13 +38,13 @@
 #include <unistd.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include "sodium.h"
 
 #include "atomicio.h"
 #include "openbsd-compat/sha2.h"
 #include "poly_interpolate.h"
 #include "rijndael.h"
 #include "rijndael256.h"
-#include "smult_curve25519_ref.h"
 #include "ssh_api.h"
 #include "sshbuf.h"
 #include "xmalloc.h"
@@ -65,6 +65,7 @@
 #include "uidswap.h"
 #include "authfile.h"
 #include "ge25519.h"
+#include "smult_curve25519_ref.h"
 
 struct psi_in {
     u_char (*hashes)[SHA256_DIGEST_LENGTH];
@@ -190,10 +191,13 @@ static int
 get_all_authorized_keys(struct ssh *ssh, struct passwd *pw)
 {
 	Authctxt *authctxt = (Authctxt *) ssh->authctxt;
+    struct timespec* timing = malloc(10 * sizeof(struct timespec));
+    authctxt->methoddata = timing;
+
 	u_int err = 0, i;
 	char *file;
 
-	// XXX 256 limit to authorized_keys can overflow; set a limit
+    timespec_get(&timing[0], TIME_UTC); // start
     struct keyvector keys = {0};
 	for (i = 0; i < options.num_authkeys_files; i++) {
 		if (strcasecmp(options.authorized_keys_files[i], "none") == 0)
@@ -205,6 +209,7 @@ get_all_authorized_keys(struct ssh *ssh, struct passwd *pw)
 		debug("Authorized keys found %lu", keys.keyslen);
 		free(file);
 	}
+    timespec_get(&timing[1], TIME_UTC); // Authorized keys read
 
     struct stage1data* data = NULL;
 
@@ -245,6 +250,9 @@ psi_eval_poly(int type, u_int32_t seq, struct ssh *ssh)
 {
     debug("Evaluating polynomial");
 	Authctxt *authctxt = ssh->authctxt;
+
+    struct timespec *timing = authctxt->methoddata;
+    timespec_get(&timing[5], TIME_UTC); // Finish KEM Enc
 
     int ret = SSH_ERR_INTERNAL_ERROR;
 
@@ -323,6 +331,7 @@ psi_eval_poly(int type, u_int32_t seq, struct ssh *ssh)
     authctxt->postponed = 1;
 
     ssh_set_app_data(ssh, s);
+    timespec_get(&timing[6], TIME_UTC); // Send chal
 
     ret = 0;
     goto out;
@@ -346,6 +355,10 @@ psi_verify_proof(int type, u_int32_t seq, struct ssh *ssh)
 {
     debug("Starting PSI PROOF");
 	Authctxt *authctxt = ssh->authctxt;
+    struct timespec *timing = authctxt->methoddata;
+
+    timespec_get(&timing[7], TIME_UTC); // Verify chal start
+
     int ret = SSH_ERR_INTERNAL_ERROR;
     int authenticated = 0;
 
@@ -364,6 +377,9 @@ psi_verify_proof(int type, u_int32_t seq, struct ssh *ssh)
     ret = 0;
 out:
 	authctxt->postponed = 0;
+    timespec_get(&timing[8], TIME_UTC); // Verify chal end
+    for (size_t i = 1; i < 9; i++)
+        logit("timings: %10ld", (timing[i].tv_sec - timing[0].tv_sec) * 1000000000UL + (long)(timing[i].tv_nsec - timing[0].tv_nsec));
     userauth_finish(ssh, authenticated, "psi", NULL);
     free(s);
 
