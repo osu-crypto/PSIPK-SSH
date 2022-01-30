@@ -45,6 +45,7 @@ int	crypto_sign_ed25519_open(unsigned char *, unsigned long long *,
 int	crypto_sign_ed25519_keypair(unsigned char *, unsigned char *);
 
 int crypto_kem_dec_ed25519(unsigned char *, const unsigned char *, const unsigned char *);
+int crypto_kem_dec_ed25519_hash(unsigned char *, const unsigned char *, const unsigned char *);
 
 #define crypto_kem_sntrup761_PUBLICKEYBYTES 1158
 #define crypto_kem_sntrup761_SECRETKEYBYTES 1763
