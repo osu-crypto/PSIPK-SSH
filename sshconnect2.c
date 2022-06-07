@@ -792,9 +792,8 @@ psi_chal(int type, u_int32_t seq, struct ssh *ssh)
 
     }
 
-    logit("The server is using %lu keys", s_hasheslen);
+    logit("Authenticating with PSI \U0001F512.\nThe server is using %lu keys", s_hasheslen);
     // XXX: Also log which key the client is using to log in.
-    // XXX: Maybe add something like the HTTPS lock icon as well.
 
     // Empty intersection
     if (s_set == 0) {
