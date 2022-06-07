@@ -8,6 +8,7 @@
 
 #include "includes.h"
 #include "crypto_api.h"
+#include "sodium.h"
 
 #include "ge25519.h"
 
@@ -48,57 +49,22 @@ int crypto_sign_ed25519_keypair(
   return 0;
 }
 
-// Find (g^r)^k_i (scalarmult(dest, gr, privkey). Compare with A_i^r (serverkeys)
-// Ret 1 if no intersection
-// Ret 0 if intersection found
-int crypto_psi_ed25519(u_char** intersection,
-    u_char **privkeys, const size_t privkeys_len,
-    u_char **serverkeys, const size_t serverkeys_len,
-    const u_char *gr
+int crypto_kem_dec_ed25519_hash(
+    unsigned char *out, const unsigned char *gr,
+    const unsigned char *sk
     )
 {
-    ge25519 *grk;
-    sc25519 sk;
-    ge25519 gegr;
-
-    ge25519_unpackneg_vartime(&gegr, gr);
-
-    // XXX n^2 algorithm is bad :)
-    for (size_t i = 0; i < privkeys_len; i++) {
-        grk = (ge25519 *) malloc(sizeof(ge25519));
-        sc25519_from32bytes(&sk, privkeys[i]);
-        ge25519_scalarmult(grk, &gegr, &sk); //(r, p, s)
-
-        for (size_t j = 0; j < serverkeys_len; j++) {
-            // check if grk == serverkeys[i]
-            // if so, append sk in intersection. Sign with (sk, serverkeys[i])
-        }
-    }
+    unsigned char extsk[64];
+    crypto_hash_sha512(extsk, sk, 32);
+    return crypto_scalarmult_ed25519(out, extsk, gr);
 }
-
 
 int crypto_kem_dec_ed25519(
     unsigned char *out, const unsigned char *gr,
     const unsigned char *sk
     )
 {
-    sc25519 scsk;
-    ge25519 get1, kemdec;
-    unsigned char extsk[64];
-
-    crypto_hash_sha512(extsk, sk, 32);
-    extsk[0] &= 248;
-    extsk[31] &= 127;
-    extsk[31] |= 64;
-
-    // scsk is the actual sk
-    sc25519_from32bytes(&scsk, extsk);
-    if (ge25519_unpackneg_vartime(&get1, gr)) return -1;
-
-    ge25519_scalarmult(&kemdec, &get1, &scsk);
-
-    ge25519_pack(out, &kemdec);
-    return 0;
+    return crypto_scalarmult_ed25519(out, sk, gr);
 }
 
 int crypto_sign_ed25519(

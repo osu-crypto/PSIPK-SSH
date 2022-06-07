@@ -24,6 +24,7 @@
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <time.h>
 #include "batcher_sort.h"
 #include "includes.h"
 #include "openbsd-compat/openbsd-compat.h"
@@ -39,6 +40,7 @@
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
+#include "sodium.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -734,6 +736,9 @@ psi_chal(int type, u_int32_t seq, struct ssh *ssh)
     u_char *s_hashes = NULL;
     size_t s_hasheslen = 0;
 
+	Authctxt *authctxt = (Authctxt *) ssh->authctxt;
+    struct timespec* timing = authctxt->methoddata;
+    timespec_get(&timing[3], TIME_UTC);
     ssh_dispatch_set(ssh, SSH2_MSG_USERAUTH_PSI_CHAL, NULL);
 
     // Check first half of hash matches ours
@@ -809,8 +814,8 @@ psi_chal(int type, u_int32_t seq, struct ssh *ssh)
         (ret = sshpkt_send(ssh)) != 0 || ssh_packet_write_wait(ssh) != 0)
         goto out;
 
-    sent = 1;
 
+    sent = 1;
 out:
     if (data)
         freezero(data->hashes, data->hashlength * sizeof(*data->hashes));
@@ -820,6 +825,10 @@ out:
         debug("Didn't send");
         userauth(ssh, calloc(1, sizeof(char)));
     }
+    timespec_get(&timing[4], TIME_UTC);
+    for (size_t i = 1; i < 5; i++)
+        logit("timings: %10ld", (timing[i].tv_sec - timing[0].tv_sec) * 1000000000UL + (long)(timing[i].tv_nsec - timing[0].tv_nsec));
+
     return ret;
 }
 
@@ -867,6 +876,10 @@ input_userauth_psi_kem_dec(int type, u_int32_t seq, struct ssh *ssh)
 
     u_char *msg = NULL;
     size_t mlen = 0;
+
+    struct timespec* timing = authctxt->methoddata;
+
+    timespec_get(&timing[1], TIME_UTC);
 
     u_char (*rsa_x)[32] = NULL, (*rsa_y)[32] = NULL;
 
@@ -1062,6 +1075,7 @@ out:
     freezero(mollerbits, mollerbyteslen);
     freezero(rsa_x, rsakeybuckets * sizeof(*rsa_x));
     freezero(rsa_y, rsakeybuckets * sizeof(*rsa_y));
+    timespec_get(&timing[2], TIME_UTC);
 	return ret;
 }
 
@@ -2286,10 +2300,15 @@ userauth_pubkey(struct ssh *ssh)
 static int
 userauth_psi(struct ssh *ssh)
 {
+
 	Authctxt *authctxt = (Authctxt *)ssh->authctxt;
+    struct timespec* timing = malloc(8 * sizeof(struct timespec));
+    authctxt->methoddata = timing;
+
     int r;
     debug("STARTING PSI AUTH");
 
+    timespec_get(&timing[0], TIME_UTC);
     // Request ring authentication
 	ssh_dispatch_set(ssh, SSH2_MSG_USERAUTH_PSI_KEM, &input_userauth_psi_kem_dec);
 	if ((r = sshpkt_start(ssh, SSH2_MSG_USERAUTH_REQUEST)) != 0 ||

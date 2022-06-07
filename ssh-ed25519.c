@@ -22,6 +22,7 @@
 #include <limits.h>
 
 #include "crypto_api.h"
+#include "sodium.h"
 
 #include <string.h>
 #include <stdarg.h>
@@ -180,7 +181,7 @@ ssh_ed25519_kem_dec(const struct sshkey *key, u_char **kem, size_t *klen,
 	if ((temp_kem = malloc(gelen)) == NULL)
 		return SSH_ERR_ALLOC_FAIL;
 
-	if ((ret = crypto_kem_dec_ed25519(temp_kem, gr, key->ed25519_sk)) != 0 ) {
+	if ((ret = crypto_kem_dec_ed25519_hash(temp_kem, gr, key->ed25519_sk)) != 0 ) {
 		r = SSH_ERR_INVALID_ARGUMENT; /* XXX better error? */
 		goto out;
 	}
@@ -212,7 +213,8 @@ ssh_ed25519_kem_enc(u_char **c, size_t *clen, void **r)
         return SSH_ERR_ALLOC_FAIL;
 	}
 
-    crypto_sign_ed25519_keypair(*c, *r);
+    randombytes(*r, 32);
+    crypto_scalarmult_ed25519_base(*c, *r);
 
 	if ((*r = realloc(*r, len)) == NULL) {
         free(*c);
